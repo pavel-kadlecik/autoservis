@@ -1,0 +1,195 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+
+<!--
+    GoodsReceiptMapper.xml — SQL pro cz.palo.autoservis.mapper.GoodsReceiptMapper
+-->
+<mapper namespace="cz.palo.autoservis.mapper.GoodsReceiptMapper">
+
+    <resultMap id="goodsReceiptItemResultMap" type="cz.palo.autoservis.model.domain.warehouse.GoodsReceiptItem">
+        <id     column="id"                     property="id"/>
+        <result column="goods_receipt_id"       property="goodsReceiptId"/>
+        <result column="product_id"             property="productId"/>
+        <result column="position"               property="position"/>
+        <result column="name_snapshot"          property="nameSnapshot"/>
+        <result column="quantity_received"      property="quantityReceived"/>
+        <result column="quantity_remaining"     property="quantityRemaining"/>
+        <!-- Odvozené, ne sloupec tabulky — plní findReservedByBatchIds a findImportableItems. -->
+        <result column="quantity_reserved"      property="quantityReserved"/>
+        <result column="unit_price_excl_vat"    property="unitPriceExclVat"/>
+        <result column="vat_rate"               property="vatRate"/>
+        <result column="total_incl_vat"         property="totalInclVat"/>
+        <result column="created_at"             property="createdAt"/>
+    </resultMap>
+
+    <!-- =========================================================
+      Znovupoužitelné SQL fragmenty
+      ========================================================= -->
+
+    <sql id="goodsReceiptItemColumns">
+        gri.id,
+        gri.goods_receipt_id,
+        gri.product_id,
+        gri.position,
+        gri.name_snapshot,
+        gri.quantity_received,
+        gri.quantity_remaining,
+        gri.unit_price_excl_vat,
+        gri.vat_rate,
+        gri.total_incl_vat,
+        gri.created_at
+    </sql>
+
+    <!--
+        Rezervované množství šarže — díly slíbené otevřeným zakázkám, ze kterých ještě
+        fyzicky neodešly. Korelováno na `gri`, takže fragment funguje v každém dotazu,
+        který tu tabulku takhle aliasuje.
+
+        Pravidlo je netriviální a MUSÍ být na jednom místě: rezervaci drží položka
+        (a) na zakázce, která není dokončená ani zrušená, a (b) bez pohybu ISSUE —
+        po výdeji už díl ze skladu odešel, takže se odečetl z quantity_remaining
+        a rezervací být přestal. Dvě kopie tohohle predikátu by se dřív či později
+        rozešly a sklad by začal lhát.
+    -->
+    <sql id="reservedOnBatch">
+        COALESCE((
+            SELECT SUM(oi.quantity)
+              FROM "order".order_items oi
+              JOIN "order".orders o ON o.id = oi.order_id
+             WHERE oi.goods_receipt_item_id = gri.id
+               AND o.status NOT IN ('COMPLETED', 'CANCELLED')
+               AND NOT EXISTS (SELECT 1
+                                 FROM warehouse.stock_movements m
+                                WHERE m.order_item_id = oi.id
+                                  AND m.movement_type = 'ISSUE')
+        ), 0) AS quantity_reserved
+    </sql>
+
+
+    <select id="autocomplete" resultType="cz.palo.autoservis.model.dto.autocomplete.AutocompleteItem">
+        SELECT
+            gr.id,
+            <choose>
+                <when test="params.importType != null and params.importType.name() == 'ORDER_NUMBER'">
+                    gr.order_number AS "value",
+                </when>
+                <otherwise>
+                    gr.invoice_number AS "value",
+                </otherwise>
+            </choose>
+            gr.supplier_name_snapshot
+                || ' · ' || COALESCE(TO_CHAR(gr.issue_date, 'DD.MM.YYYY'), 'bez data')
+                || ' · ' || REPLACE(TO_CHAR(gr.total_amount, 'FM999,999,990'), ',', ' ')
+                || ' ' || gr.currency                                                    AS description
+        FROM warehouse.goods_receipts gr
+        <where>
+            gr.status = 'CONFIRMED'
+            AND EXISTS (
+            SELECT 1 FROM warehouse.goods_receipt_items gri
+            WHERE gri.goods_receipt_id = gr.id
+            AND gri.quantity_remaining > 0
+            )
+            <if test="params.importType != null and params.importType.name() == 'ORDER_NUMBER'">
+                AND gr.order_number IS NOT NULL
+            </if>
+            <if test="params.normalizedQuery() != null and params.normalizedQuery() != ''">
+                <bind name="searchLike" value="'%' + params.normalizedQuery() + '%'" />
+                <choose>
+                    <when test="params.importType != null and params.importType.name() == 'ORDER_NUMBER'">
+                        AND LOWER(gr.order_number) LIKE LOWER(#{searchLike})
+                    </when>
+                    <otherwise>
+                        AND LOWER(gr.invoice_number) LIKE LOWER(#{searchLike})
+                    </otherwise>
+                </choose>
+            </if>
+        </where>
+        ORDER BY gr.issue_date DESC NULLS LAST
+        LIMIT #{params.effectiveLimit} + 1 OFFSET 0
+    </select>
+
+    <!--
+        Nabídka šarží pro import na zakázku. Vrací VEDLE zbytku šarže i rezervované
+        množství, aby okno výběru ukázalo obojí — „Zbývá" (co leží v regále) i „Dostupné"
+        (co si ještě lze slíbit). Bez toho okno nabízelo kusy držené jinou zakázkou:
+        validovalo vstup proti zbytku šarže a server ho pak odmítl s QUANTITY_EXCEEDS_REMAINING,
+        tedy až po odeslání a s rollbackem celé dávky.
+
+        Vyčerpané šarže (`quantity_remaining = 0`) se dál nenabízejí vůbec. Šarže, kde
+        něco leží, ale je to celé rezervované, se naopak zobrazit MÁ — obsluha z ní sice
+        importovat nemůže, ale vidí, že díl v regále je, a může zakázky přerovnat místo
+        objednávání (rozhodnutí uživatele 2026-08-06).
+    -->
+    <select id="findImportableItems" resultMap="goodsReceiptItemResultMap">
+        SELECT
+            <include refid="goodsReceiptItemColumns"/>,
+            <include refid="reservedOnBatch"/>
+        FROM warehouse.goods_receipt_items gri
+        WHERE gri.goods_receipt_id = #{receiptId}
+        AND gri.quantity_remaining > 0
+        ORDER BY gri.position
+    </select>
+
+    <select id="existsConfirmed" resultType="java.lang.Boolean">
+        SELECT EXISTS
+        (
+            SELECT 1 FROM warehouse.goods_receipts gr
+            WHERE gr.status = 'CONFIRMED'
+            AND gr.id = #{receiptId}
+        )
+    </select>
+
+    <select id="findById" resultMap="goodsReceiptItemResultMap">
+        SELECT <include refid="goodsReceiptItemColumns"/>
+        FROM warehouse.goods_receipt_items gri
+        WHERE gri.id = #{id}
+    </select>
+
+    <!--
+        Dávkové načtení šarží s FOR UPDATE — zamkne šarže do konce transakce volajícího,
+        takže souběžné výdeje z téže šarže se serializují, místo aby oba prošly kontrolou
+        proti zastaralému quantity_remaining (K6, analyza-2026-07).
+        Jednoduchý single-table SELECT (bez JOIN), takže FOR UPDATE platí čistě.
+
+        Rezervace se tu záměrně NEPOČÍTÁ — má vlastní dotaz `findReservedByBatchIds`,
+        který musí běžet až po získání zámku. Viz komentář u něj.
+    -->
+    <select id="findByIdsForUpdate" resultMap="goodsReceiptItemResultMap">
+        SELECT
+            <include refid="goodsReceiptItemColumns"/>
+        FROM warehouse.goods_receipt_items gri
+        WHERE gri.id IN
+        <foreach collection="ids" item="id" open="(" separator="," close=")">
+            #{id}
+        </foreach>
+        FOR UPDATE
+    </select>
+
+    <!--
+        Kolik je ze šarží slíbeno otevřeným zakázkám a ještě nevydáno (V83).
+
+        MUSÍ BĚŽET AŽ PO `findByIdsForUpdate`, jako samostatný příkaz. Dokud byl tenhle
+        součet poddotazem uvnitř zamykajícího SELECTu, souběh dvou importů o poslední kus
+        propustil oba: zámek sice druhou transakci pozdrží, jenže její poddotaz se
+        vyhodnocuje nad snímkem pořízeným při STARTU příkazu, tedy dřív, než první
+        transakce svou rezervaci commitla — a druhá tak viděla rezervováno 0. Zámek
+        navíc sám o sobě nestačí, protože rezervace zůstatek šarže vůbec nemění.
+        V režimu READ COMMITTED dostane každý příkaz čerstvý snímek, takže dotaz
+        vypsaný samostatně už rezervaci první transakce uvidí.
+        Pokryto testem `StockReservationConcurrencyTest`.
+
+        Vrací jen `id` a odvozené `quantity_reserved`; ostatní pole zůstanou prázdná.
+    -->
+    <select id="findReservedByBatchIds" resultMap="goodsReceiptItemResultMap">
+        SELECT
+            gri.id,
+            <include refid="reservedOnBatch"/>
+        FROM warehouse.goods_receipt_items gri
+        WHERE gri.id IN
+        <foreach collection="ids" item="id" open="(" separator="," close=")">
+            #{id}
+        </foreach>
+    </select>
+
+</mapper>

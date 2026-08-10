@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+
+<!--
+    RoleMapper.xml — SQL pro cz.palo.autoservis.security.mapper.RoleMapper
+    Tabulka: security.roles (vždy plně kvalifikovaná dle konvence projektu)
+-->
+<mapper namespace="cz.palo.autoservis.security.mapper.RoleMapper">
+
+    <select id="getAll" resultType="Role">
+        SELECT id, name, description
+        FROM security.roles
+    </select>
+
+</mapper>

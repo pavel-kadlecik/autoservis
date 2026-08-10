@@ -1,0 +1,603 @@
+/*
+ * Plánovací kalendář — denní karty.
+ *
+ * Vzniklo 2026-08-03 při odchodu od časové osy: osa kreslila výšku podle délky termínu,
+ * jenže délku opravy mechanik často nezná, a pět aut objednaných na stejnou hodinu rozsekala
+ * na nečitelné svislé proužky. Karty s pořadím podle příjezdu nic z toho nepředstírají.
+ *
+ * Barvy stavů odpovídají tónům StatusBadge (format.js). Třídy `fc-status-*` zůstaly kvůli
+ * jedinému zdroji pravdy sdílenému s vysvětlivkami — už nemají nic společného s FullCalendarem,
+ * který byl při přestavbě z projektu odebrán.
+ */
+
+/* ---------- lišta ---------- */
+
+.schedule-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    margin-bottom: 1rem;
+}
+
+/* Filtr a přepínač pohledu drží pohromadě vpravo; na úzké obrazovce se zalomí pod nadpis. */
+.schedule-toolbar-right {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+}
+
+.schedule-filter {
+    margin-bottom: 0;
+    font-size: 0.8125rem;
+    white-space: nowrap;
+}
+
+.schedule-filter .form-check-label {
+    cursor: pointer;
+}
+
+.schedule-filter-count {
+    color: var(--bs-secondary-color);
+}
+
+.schedule-range {
+    flex: 1 1 auto;
+    margin: 0;
+    text-align: center;
+    font-size: 1.05rem;
+    font-weight: 600;
+}
+
+/* ---------- týden ---------- */
+
+/*
+ * Týden je vždycky sedm sloupců v jedné řadě — `auto-fit` s minimální šířkou se při užším
+ * obsahu zalomil na 5+2, což z týdne udělalo nesrozumitelnou změť. `minmax(0, 1fr)` dovolí
+ * sloupci zúžit se pod šířku obsahu; bez té nuly by ho dlouhý název rozepřel.
+ *
+ * Zalomení nastane až pod 1000 px, kde už sedm sloupců čitelných není.
+ */
+.schedule-week {
+    display: grid;
+    grid-template-columns: repeat(7, minmax(0, 1fr));
+    gap: 0.5rem;
+    align-items: start;
+}
+
+@media (max-width: 1000px) {
+    .schedule-week {
+        grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+    }
+}
+
+.schedule-day {
+    display: flex;
+    flex-direction: column;
+    background-color: var(--bs-body-bg);
+    border: 1px solid var(--bs-border-color);
+    border-radius: 0.75rem;
+    overflow: hidden;
+}
+
+.schedule-day.is-today {
+    border-color: var(--bs-primary);
+}
+
+.schedule-day-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    padding: 0.5rem 0.625rem;
+    border-bottom: 1px solid var(--bs-border-color);
+    background-color: var(--bs-tertiary-bg);
+}
+
+.schedule-day-date {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 0.375rem;
+}
+
+.schedule-day-number {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 1.75rem;
+    height: 1.75rem;
+    border-radius: 50%;
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--bs-body-color);
+}
+
+/* Dnešek v plném kolečku — jediná značka, kterou v týdnu potřebuješ najít očima. */
+.schedule-day-number.is-today {
+    background-color: var(--bs-primary);
+    color: #fff;
+}
+
+.schedule-day-name {
+    font-size: 0.75rem;
+    color: var(--bs-secondary-color);
+}
+
+/* Tlačítko „+“ se zviditelní až při najetí na kartu — jinak by sedm plusů rušilo. */
+.schedule-day-add {
+    border: none;
+    background: none;
+    padding: 0.125rem 0.25rem;
+    line-height: 1;
+    color: var(--bs-secondary-color);
+    opacity: 0;
+    transition: opacity 0.12s ease-in-out;
+}
+
+.schedule-day:hover .schedule-day-add,
+.schedule-day-add:focus-visible {
+    opacity: 1;
+}
+
+.schedule-day-add:hover {
+    color: var(--bs-primary);
+}
+
+.schedule-day-body {
+    display: flex;
+    flex-direction: column;
+    gap: 0.375rem;
+    padding: 0.5rem;
+    min-height: 5rem;
+}
+
+.schedule-day-empty {
+    margin: auto 0;
+    text-align: center;
+    font-size: 0.8125rem;
+    color: var(--bs-secondary-color);
+}
+
+/* ---------- objednávka ---------- */
+
+.schedule-booking {
+    display: flex;
+    flex-direction: column;
+    gap: 0.0625rem;
+    width: 100%;
+    padding: 0.5rem 0.625rem;
+    border: none;
+    border-radius: 0.5rem;
+    text-align: left;
+    background-color: var(--fc-event-bg-color);
+    color: var(--fc-event-text-color);
+}
+
+.schedule-booking:hover {
+    filter: brightness(0.96);
+}
+
+.schedule-booking-time {
+    font-size: 0.75rem;
+    font-weight: 600;
+}
+
+.schedule-booking-title {
+    font-size: 0.8125rem;
+}
+
+.schedule-booking-meta {
+    font-size: 0.75rem;
+    opacity: 0.8;
+    /* V úzkém sloupci se dlouhé jméno s SPZ musí zalomit, ne rozepřít kartu. */
+    overflow-wrap: anywhere;
+}
+
+.schedule-booking-title {
+    overflow-wrap: anywhere;
+}
+
+/* SPZ je pro servis hlavní identifikátor auta — drží se pohromadě a nezalamuje se. */
+.schedule-booking-plate {
+    font-size: 0.75rem;
+    font-variant-numeric: tabular-nums;
+    opacity: 0.75;
+    white-space: nowrap;
+}
+
+/*
+ * Odznak stavu se v úzké kartě musí zalomit — „Převedeno na zakázku" přetékalo o 39 px
+ * ven z karty. `StatusBadge` je pill s `white-space: nowrap` od Bootstrapu, proto ho tu
+ * přebíjíme; zaoblení pilulky pak nahradí mírné zaoblení, ať to při dvou řádcích nevypadá divně.
+ */
+.schedule-booking-status {
+    align-self: flex-start;
+    margin-top: 0.25rem;
+    white-space: normal;
+    text-align: left;
+    border-radius: 0.375rem;
+    font-size: 0.6875rem;
+    line-height: 1.25;
+}
+
+/* ---------- pokračování vícedenní objednávky ----------
+ *
+ * Drží PLNOU barvu stavu (rozhodnutí uživatele 2026-08-03) — barva je informace a ztlumení
+ * ji zahazovalo. Že nejde o příjezd dne, říká čárkovaný obvod (currentColor = barva textu
+ * stavu, takže se přebarvuje se stavem sám) a zvýrazněná šipka.
+ */
+
+.schedule-continuation {
+    display: flex;
+    flex-direction: column;
+    gap: 0.0625rem;
+    width: 100%;
+    padding: 0.5rem 0.625rem;
+    border: 1.5px dashed currentColor;
+    border-radius: 0.5rem;
+    text-align: left;
+    background-color: var(--fc-event-bg-color);
+    color: var(--fc-event-text-color);
+}
+
+.schedule-continuation:hover {
+    filter: brightness(0.96);
+}
+
+.schedule-continuation-arrow {
+    font-size: 1.05rem;
+    line-height: 1;
+    vertical-align: -3px;
+    margin-right: 0.25rem;
+}
+
+.schedule-continuation-main {
+    font-size: 0.75rem;
+    font-weight: 600;
+    overflow-wrap: anywhere;
+}
+
+.schedule-continuation-sub {
+    font-size: 0.71875rem;
+    opacity: 0.85;
+    overflow-wrap: anywhere;
+}
+
+/* ---------- blokace dílny ---------- */
+
+.schedule-closure {
+    display: flex;
+    flex-direction: column;
+    gap: 0.0625rem;
+    width: 100%;
+    padding: 0.5rem 0.625rem;
+    border: 1px dashed var(--bs-secondary-color);
+    border-radius: 0.5rem;
+    text-align: left;
+    color: var(--bs-secondary-color);
+    background-image: repeating-linear-gradient(
+            45deg,
+            var(--bs-secondary-bg),
+            var(--bs-secondary-bg) 6px,
+            var(--bs-tertiary-bg) 6px,
+            var(--bs-tertiary-bg) 12px
+    );
+}
+
+.schedule-closure-label {
+    font-size: 0.75rem;
+    font-weight: 600;
+}
+
+.schedule-closure-reason {
+    font-size: 0.8125rem;
+}
+
+/* ---------- měsíc ---------- */
+
+.schedule-month {
+    display: grid;
+    grid-template-columns: repeat(7, 1fr);
+    gap: 0.375rem;
+}
+
+.schedule-month-head {
+    padding-bottom: 0.25rem;
+    text-align: center;
+    font-size: 0.75rem;
+    color: var(--bs-secondary-color);
+}
+
+/*
+ * Buňka = „mini seznam": číslo dne + až 3 řádky „čas jméno" + „+N další".
+ * Klik kamkoli přepne na týden dne; řádky jsou <span>, protože v buňce-tlačítku
+ * nesmí být vnořená tlačítka.
+ */
+.schedule-month-day {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 3px;
+    min-height: 6.25rem;
+    padding: 0.375rem;
+    border: 1px solid var(--bs-border-color);
+    border-radius: 0.5rem;
+    background-color: var(--bs-body-bg);
+    color: var(--bs-body-color);
+    text-align: left;
+}
+
+.schedule-month-day:hover {
+    border-color: var(--bs-primary);
+}
+
+/* Dny sousedních měsíců mřížku dorovnávají, ale nemají poutat pozornost. */
+.schedule-month-day.is-outside {
+    opacity: 0.4;
+}
+
+.schedule-month-day.is-today {
+    border-color: var(--bs-primary);
+}
+
+.schedule-month-day.is-closed {
+    background-image: repeating-linear-gradient(
+            45deg,
+            var(--bs-secondary-bg),
+            var(--bs-secondary-bg) 6px,
+            var(--bs-tertiary-bg) 6px,
+            var(--bs-tertiary-bg) 12px
+    );
+}
+
+.schedule-month-number {
+    font-size: 0.9375rem;
+    line-height: 1.625rem;
+    padding-left: 2px;
+}
+
+.schedule-month-day.is-today .schedule-month-number {
+    align-self: flex-start;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 1.625rem;
+    height: 1.625rem;
+    border-radius: 50%;
+    background-color: var(--bs-primary);
+    color: #fff;
+    padding-left: 0;
+}
+
+.schedule-month-row {
+    font-size: 0.71875rem;
+    line-height: 1.4;
+    padding: 1px 6px;
+    border-radius: 0.25rem;
+    background-color: var(--fc-event-bg-color);
+    color: var(--fc-event-text-color);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* Pokračování drží barvu stavu; odlišuje ho čárkovaný obvod a tučná šipka. */
+.schedule-month-row.is-continuation {
+    border: 1px dashed currentColor;
+}
+
+.schedule-month-arrow {
+    font-weight: 700;
+    margin-right: 2px;
+}
+
+.schedule-month-row.fc-status-cancelled {
+    text-decoration: line-through;
+}
+
+.schedule-month-more {
+    font-size: 0.6875rem;
+    color: var(--bs-primary);
+    padding-left: 6px;
+}
+
+.schedule-month-closed {
+    font-size: 0.6875rem;
+    font-weight: 600;
+    color: var(--bs-secondary-color);
+    padding-left: 2px;
+}
+
+/* Blokace v měsíci nese totéž co karta v týdnu — čas a pod ním důvod. Sloupec, aby se
+   dlouhý důvod („celozávodní dovolená") zalomil pod čas, ne vedle něj. */
+.schedule-month-closure {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+}
+
+/* Důvod je doprovodný údaj: menší a tišší než čas, ať z buňky nekřičí. Delší text se ořízne —
+   celý je v tooltipu a v týdnu, kde je na něj místo. */
+.schedule-month-closure-reason {
+    padding-left: 2px;
+    font-size: 0.6875rem;
+    color: var(--bs-secondary-color);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* ---------- barvy stavů (shodné s tóny StatusBadge) ---------- */
+
+.fc-status-planned {
+    --fc-event-bg-color: var(--bs-primary-bg-subtle);
+    --fc-event-text-color: var(--bs-primary-text-emphasis);
+}
+
+.fc-status-converted {
+    --fc-event-bg-color: var(--bs-success-bg-subtle);
+    --fc-event-text-color: var(--bs-success-text-emphasis);
+}
+
+.fc-status-no_show {
+    --fc-event-bg-color: var(--bs-danger-bg-subtle);
+    --fc-event-text-color: var(--bs-danger-text-emphasis);
+}
+
+/* Zrušené se drží zpátky — v kalendáři má být vidět, ale nemá poutat pozornost. */
+.fc-status-cancelled {
+    --fc-event-bg-color: var(--bs-secondary-bg);
+    --fc-event-text-color: var(--bs-secondary-color);
+}
+
+/*
+ * Událost (EVENT, V82) se barví podle TYPU, ne stavu — žije jen v Naplánováno/Zrušeno
+ * a musí být na první pohled odlišitelná od objednávek. Info tón je jediný z Bootstrap
+ * palety, který stavy nepoužívají (primary/success/danger/secondary jsou zabrané).
+ */
+.fc-type-event {
+    --fc-event-bg-color: var(--bs-info-bg-subtle);
+    --fc-event-text-color: var(--bs-info-text-emphasis);
+}
+
+.schedule-booking.fc-status-cancelled .schedule-booking-title {
+    text-decoration: line-through;
+}
+
+/* ---------- vysvětlivky ---------- */
+
+.schedule-legend {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.25rem 1rem;
+    margin-top: 1rem;
+    padding-top: 0.75rem;
+    border-top: 1px solid var(--bs-border-color);
+    font-size: 0.8125rem;
+    color: var(--bs-secondary-color);
+}
+
+.schedule-legend-title {
+    font-weight: 600;
+    color: var(--bs-body-color);
+}
+
+.schedule-legend-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.375rem;
+    white-space: nowrap;
+}
+
+/*
+ * Vzorek si bere barvu z proměnné, kterou mu nastaví třída `fc-status-*` — tedy z jediné
+ * definice, kterou používají i objednávky v kartách. Legenda proto nemůže začít lhát.
+ */
+.schedule-legend-swatch {
+    width: 1.5rem;
+    height: 0.9rem;
+    flex: 0 0 auto;
+    border-radius: 0.25rem;
+    background-color: var(--fc-event-bg-color);
+}
+
+.schedule-legend-swatch.schedule-legend-closure {
+    background-image: repeating-linear-gradient(
+            45deg,
+            var(--bs-secondary-bg),
+            var(--bs-secondary-bg) 4px,
+            var(--bs-tertiary-bg) 4px,
+            var(--bs-tertiary-bg) 8px
+    );
+    border: 1px dashed var(--bs-secondary-color);
+}
+
+/* ---------- zavřený den podle otevírací doby ---------- */
+
+/*
+ * Ztlumení, ne šrafování: šrafovaný podklad má blokace dílny (jednorázová událost s důvodem)
+ * a pravidelně zavřená neděle by s ní jinak splynula. Tady jde o pozadí, ne o událost.
+ */
+.schedule-day.is-closed-day {
+    background-color: var(--bs-tertiary-bg);
+}
+
+.schedule-day.is-closed-day .schedule-day-head {
+    background-color: transparent;
+}
+
+.schedule-day.is-closed-day .schedule-day-number,
+.schedule-day.is-closed-day .schedule-day-name {
+    color: var(--bs-secondary-color);
+}
+
+/* Přehled otevírací doby pod vysvětlivkami — tichý doprovodný údaj, ne ovládací prvek. */
+.schedule-hours-note {
+    margin: 0.5rem 0 0;
+    font-size: 0.8125rem;
+    color: var(--bs-secondary-color);
+}
+
+/* =========================================================================
+   Přesun termínu tažením (@dnd-kit)
+
+   Tažená položka se kreslí v DragOverlay, ne na místě, takže tenhle obal
+   nepotřebuje transform — jen ztlumí originál, ať je vidět, co se přesouvá.
+   ========================================================================= */
+.schedule-draggable {
+    cursor: grab;
+}
+
+.schedule-draggable:active {
+    cursor: grabbing;
+}
+
+.schedule-draggable.is-dragging {
+    opacity: 0.4;
+}
+
+/* Cílový den během tažení. Přerušovaný obrys uvnitř okraje (offset dovnitř),
+   aby se nepral se stínem karty a nerozhýbal mřížku. */
+.schedule-day.is-drop-target,
+.schedule-month-drop.is-drop-target .schedule-month-day {
+    outline: 2px dashed var(--bs-primary);
+    outline-offset: -2px;
+}
+
+/* Den, kam upustit nelze (objednávka × blokace). Červená říká „sem ne" dřív, než se pustí myš —
+   jinak by se zákaz projevil až vrácením položky, což vypadá jako netrefené přetažení.
+   Podbarvení je jemné: obrys nese hlavní sdělení, výplň ho jen podpírá. */
+.schedule-day.is-drop-blocked,
+.schedule-month-drop.is-drop-blocked .schedule-month-day {
+    outline: 2px dashed var(--bs-danger);
+    outline-offset: -2px;
+    background-color: var(--bs-danger-bg-subtle);
+}
+
+/* Obal buňky měsíce, který přijímá upuštění. Musí zdědit pozici v mřížce,
+   jinak by se rozpadl týdenní řádek. */
+.schedule-month-drop {
+    display: flex;
+    min-width: 0;
+}
+
+.schedule-month-drop > .schedule-month-day {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+/* Náhled u kurzoru. Nese čas a jméno — tedy totéž, co řádek v měsíci,
+   aby bylo při tažení poznat, co se veze. */
+.schedule-drag-ghost {
+    padding: 0.25rem 0.5rem;
+    border-radius: 0.375rem;
+    background-color: var(--bs-body-bg);
+    border: 1px solid var(--bs-primary);
+    box-shadow: 0 0.5rem 1rem rgba(0, 0, 0, 0.15);
+    font-size: 0.8125rem;
+    white-space: nowrap;
+    cursor: grabbing;
+}

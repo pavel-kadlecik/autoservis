@@ -1,0 +1,25 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "backend",
+      "runtimeExecutable": "./mvnw",
+      "runtimeArgs": ["spring-boot:run", "-Dspring-boot.run.profiles=local"],
+      "port": 8080
+    },
+    {
+      "name": "backend-windows",
+      "runtimeExecutable": "cmd",
+      "runtimeArgs": ["/c", ".\\mvnw.cmd", "spring-boot:run", "-Dspring-boot.run.profiles=local"],
+      "port": 8080
+    },
+    {
+      "name": "frontend",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev"],
+      "cwd": "frontend/autoservis-frontend",
+      "port": 5173,
+      "autoPort": false
+    }
+  ]
+}

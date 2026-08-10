@@ -1,0 +1,373 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+
+<!--
+    DashboardMapper.xml — SQL pro cz.palo.autoservis.mapper.DashboardMapper
+    Samé read-only agregace pro úvodní přehled. Tabulky plně kvalifikované
+    (schéma "order" je rezervované slovo, proto v uvozovkách). ENUM sloupce se
+    přetypují na ::text, ať se mapují na String bez typeHandleru. Aliasy jsou
+    camelCase, aby projekce nezávisely na map-underscore-to-camel-case (vzor
+    WarehouseMapper.xml). Datové výpočty (daysOverdue, expired) dělá DB —
+    deterministicky, jako STK filtr a cenové views.
+-->
+<mapper namespace="cz.palo.autoservis.mapper.DashboardMapper">
+
+    <!-- =========================================================
+         Zakázky
+         ========================================================= -->
+
+    <!-- Rozpracované (ne COMPLETED/CANCELLED) po stavech. -->
+    <select id="countActiveOrdersByStatus"
+            resultType="cz.palo.autoservis.model.dto.dashboard.DashboardDto$StatusCount">
+        SELECT o.status::text AS status,
+               COUNT(*)       AS count
+        FROM "order".orders o
+        WHERE o.is_active = TRUE
+          AND o.status NOT IN ('COMPLETED', 'CANCELLED')
+        GROUP BY o.status
+    </select>
+
+    <!-- Po odhadovaném termínu = odhad vyplněný a už v minulosti. -->
+    <sql id="overdueOrdersWhere">
+        WHERE o.is_active = TRUE
+          AND o.status NOT IN ('COMPLETED', 'CANCELLED')
+          AND o.estimated_completion_at IS NOT NULL
+          AND o.estimated_completion_at &lt; NOW()
+    </sql>
+
+    <select id="countOverdueOrders" resultType="int">
+        SELECT COUNT(*)
+        FROM "order".orders o
+        <include refid="overdueOrdersWhere"/>
+    </select>
+
+    <select id="findOverdueOrdersPreview"
+            resultType="cz.palo.autoservis.model.dto.dashboard.DashboardDto$OrderPreview">
+        SELECT
+            o.id                            AS id,
+            o.order_number                  AS orderNumber,
+            CONCAT_WS(' ', v.brand, v.model) AS vehicleLabel,
+            v.license_plate                 AS vehicleLicensePlate,
+            o.status::text                  AS status,
+            o.estimated_completion_at       AS estimatedCompletionAt,
+            (CURRENT_DATE - o.estimated_completion_at::date) AS daysOverdue
+        FROM "order".orders o
+        LEFT JOIN vehicle.vehicles v ON v.id = o.vehicle_id
+        <include refid="overdueOrdersWhere"/>
+        ORDER BY o.estimated_completion_at ASC
+        LIMIT 5
+    </select>
+
+    <!-- K vyzvednutí — nejdéle čekající první (nejstarší změna stavu). Počet
+         bere service z countActiveOrdersByStatus (READY_FOR_PICKUP). -->
+    <select id="findReadyForPickupPreview"
+            resultType="cz.palo.autoservis.model.dto.dashboard.DashboardDto$OrderPreview">
+        SELECT
+            o.id                            AS id,
+            o.order_number                  AS orderNumber,
+            CONCAT_WS(' ', v.brand, v.model) AS vehicleLabel,
+            v.license_plate                 AS vehicleLicensePlate,
+            o.status::text                  AS status,
+            o.estimated_completion_at       AS estimatedCompletionAt
+        FROM "order".orders o
+        LEFT JOIN vehicle.vehicles v ON v.id = o.vehicle_id
+        WHERE o.is_active = TRUE
+          AND o.status = 'READY_FOR_PICKUP'
+        ORDER BY o.updated_at ASC
+        LIMIT 5
+    </select>
+
+    <!-- Dokončené zakázky bez nestornované faktury — 1:1 faktura↔zakázka. -->
+    <select id="countOrdersToInvoice" resultType="int">
+        SELECT COUNT(*)
+        FROM "order".orders o
+        WHERE o.is_active = TRUE
+          AND o.status = 'COMPLETED'
+          AND NOT EXISTS (
+              SELECT 1 FROM billing.invoices inv
+              WHERE inv.order_id = o.id
+                AND inv.status &lt;&gt; 'CANCELLED'
+          )
+    </select>
+
+    <!-- =========================================================
+         Faktury
+         ========================================================= -->
+
+    <!--
+        Po splatnosti = vystavená faktura po datu splatnosti, KTEROU NERUŠÍ DOBROPIS (audit KN-20).
+        Bez té podmínky zůstala plně dobropisovaná faktura v pohledávkách napořád a obsluha
+        urgovala zákazníka, kterému už peníze vrátila.
+
+        Počítá se jen VYSTAVENÝ dobropis: koncept nemá evidenční číslo a není daňovým dokladem,
+        takže pohledávka do jeho vystavení právně trvá. (Unikát `uq_credit_notes_original_active`
+        řeší něco jiného — brání druhému dobropisu, a proto zahrnuje i koncepty.)
+    -->
+    <sql id="overdueInvoicesWhere">
+        WHERE i.status = 'ISSUED'
+          AND i.due_date &lt; CURRENT_DATE
+          AND NOT EXISTS (
+              SELECT 1 FROM billing.credit_notes cn
+              WHERE cn.original_invoice_id = i.id
+                AND cn.status = 'ISSUED'
+          )
+    </sql>
+
+    <!-- Počet i součet (s DPH) jedním dotazem; view V32 dá total_gross. -->
+    <select id="sumOverdueInvoices"
+            resultType="cz.palo.autoservis.model.dto.dashboard.DashboardDto$CountSum">
+        SELECT COUNT(*)                        AS count,
+               COALESCE(SUM(t.total_gross), 0) AS total
+        FROM billing.invoices i
+        LEFT JOIN billing.v_invoice_price_totals t ON t.invoice_id = i.id
+        <include refid="overdueInvoicesWhere"/>
+    </select>
+
+    <select id="findOverdueInvoicesPreview"
+            resultType="cz.palo.autoservis.model.dto.dashboard.DashboardDto$InvoicePreview">
+        SELECT
+            i.id                        AS id,
+            i.invoice_number            AS invoiceNumber,
+            i.customer_name_snapshot    AS customerName,
+            i.due_date                  AS dueDate,
+            COALESCE(t.total_gross, 0)  AS amount,
+            (CURRENT_DATE - i.due_date) AS daysOverdue
+        FROM billing.invoices i
+        LEFT JOIN billing.v_invoice_price_totals t ON t.invoice_id = i.id
+        <include refid="overdueInvoicesWhere"/>
+        ORDER BY i.due_date ASC
+        LIMIT 5
+    </select>
+
+    <select id="countDraftInvoices" resultType="int">
+        SELECT COUNT(*)
+        FROM billing.invoices i
+        WHERE i.status = 'DRAFT'
+    </select>
+
+    <!--
+        Tržby tento a minulý měsíc podle issue_date. FILTER rozdělí jeden průchod
+        na dva měsíce; WHERE zúží na dva měsíce dat, aby se nescanovala celá tabulka.
+        ISSUED i PAID (vystavená faktura je tržba; datum úhrady se neeviduje).
+
+        Od auditu KN-20 se odečítají VYSTAVENÉ dobropisy — bez toho zůstala dobropisovaná
+        faktura v tržbách měsíce, přestože se peníze vrátily. Dobropis se odečítá v měsíci
+        SVÉHO vystavení, ne v měsíci původní faktury (rozhodnutí uživatele 2026-07-30):
+        odpovídá to běžné praxi a nemění už uzavřený měsíc zpětně.
+
+        Částku dobropisu nedrží vlastní sloupec — MVP je plný dobropis, takže se bere
+        celková částka původní faktury (týž zdroj, ze kterého ji počítá i detail dokladu).
+        Až přibude částečný dobropis (TD-62), musí se sem doplnit jeho vlastní částka.
+    -->
+    <select id="sumRevenue"
+            resultType="cz.palo.autoservis.model.dto.dashboard.DashboardDto$Revenue">
+        SELECT
+            issued.current_month  - credited.current_month  AS currentMonth,
+            issued.previous_month - credited.previous_month AS previousMonth
+        FROM (
+            SELECT
+                COALESCE(SUM(t.total_gross) FILTER (
+                    WHERE date_trunc('month', i.issue_date) = date_trunc('month', CURRENT_DATE)), 0)
+                    AS current_month,
+                COALESCE(SUM(t.total_gross) FILTER (
+                    WHERE date_trunc('month', i.issue_date) = date_trunc('month', CURRENT_DATE - INTERVAL '1 month')), 0)
+                    AS previous_month
+            FROM billing.invoices i
+            LEFT JOIN billing.v_invoice_price_totals t ON t.invoice_id = i.id
+            WHERE i.status IN ('ISSUED', 'PAID')
+              AND i.issue_date &gt;= date_trunc('month', CURRENT_DATE - INTERVAL '1 month')
+        ) AS issued
+        CROSS JOIN (
+            SELECT
+                COALESCE(SUM(t.total_gross) FILTER (
+                    WHERE date_trunc('month', cn.issue_date) = date_trunc('month', CURRENT_DATE)), 0)
+                    AS current_month,
+                COALESCE(SUM(t.total_gross) FILTER (
+                    WHERE date_trunc('month', cn.issue_date) = date_trunc('month', CURRENT_DATE - INTERVAL '1 month')), 0)
+                    AS previous_month
+            FROM billing.credit_notes cn
+            LEFT JOIN billing.v_invoice_price_totals t ON t.invoice_id = cn.original_invoice_id
+            WHERE cn.status = 'ISSUED'
+              AND cn.issue_date &gt;= date_trunc('month', CURRENT_DATE - INTERVAL '1 month')
+        ) AS credited
+    </select>
+
+    <!--
+        Marže z položek vyfakturovaných zakázek: (prodejní − nákupní) × množství.
+        Náklad práce (purchase_price u LABOR = snímek sazby) odemyká i marži práce,
+        dřív šel spočítat jen materiál. Období podle issue_date faktury (zrcadlí tržby),
+        jen ISSUED/PAID (1:1 aktivní faktura ↔ zakázka, takže žádné dvojí započtení).
+        Položky bez známého nákladu (purchase_price NULL) se vynechávají — jinak by
+        se tvářily jako 100% marže. total zahrnuje i OTHER_SERVICES, proto ≥ material+labor.
+    -->
+    <select id="sumMargin"
+            resultType="cz.palo.autoservis.model.dto.dashboard.DashboardDto$Margin">
+        SELECT
+            COALESCE(SUM((oi.unit_price - oi.purchase_price) * oi.quantity) FILTER (
+                WHERE date_trunc('month', i.issue_date) = date_trunc('month', CURRENT_DATE)), 0)
+                AS totalCurrentMonth,
+            COALESCE(SUM((oi.unit_price - oi.purchase_price) * oi.quantity) FILTER (
+                WHERE date_trunc('month', i.issue_date) = date_trunc('month', CURRENT_DATE - INTERVAL '1 month')), 0)
+                AS totalPreviousMonth,
+            COALESCE(SUM((oi.unit_price - oi.purchase_price) * oi.quantity) FILTER (
+                WHERE oi.item_type = 'MATERIAL'
+                  AND date_trunc('month', i.issue_date) = date_trunc('month', CURRENT_DATE)), 0)
+                AS materialCurrentMonth,
+            COALESCE(SUM((oi.unit_price - oi.purchase_price) * oi.quantity) FILTER (
+                WHERE oi.item_type = 'MATERIAL'
+                  AND date_trunc('month', i.issue_date) = date_trunc('month', CURRENT_DATE - INTERVAL '1 month')), 0)
+                AS materialPreviousMonth,
+            COALESCE(SUM((oi.unit_price - oi.purchase_price) * oi.quantity) FILTER (
+                WHERE oi.item_type = 'LABOR'
+                  AND date_trunc('month', i.issue_date) = date_trunc('month', CURRENT_DATE)), 0)
+                AS laborCurrentMonth,
+            COALESCE(SUM((oi.unit_price - oi.purchase_price) * oi.quantity) FILTER (
+                WHERE oi.item_type = 'LABOR'
+                  AND date_trunc('month', i.issue_date) = date_trunc('month', CURRENT_DATE - INTERVAL '1 month')), 0)
+                AS laborPreviousMonth
+        FROM "order".order_items oi
+        JOIN "order".orders o   ON o.id = oi.order_id
+        <!-- Jen AKTIVNÍ faktura zakázky (V69): po dobropisu a refakturaci má zakázka dvě
+             nestornované faktury a bez tohohle predikátu by se každá položka započítala
+             dvakrát. Dobropisovaná faktura marži nenese — tržbu z ní zrušil dobropis. -->
+        JOIN billing.invoices i ON i.order_id = o.id
+                               AND i.status IN ('ISSUED', 'PAID')
+                               AND i.credited_at IS NULL
+        WHERE oi.purchase_price IS NOT NULL
+          AND i.issue_date &gt;= date_trunc('month', CURRENT_DATE - INTERVAL '1 month')
+    </select>
+
+    <!-- =========================================================
+         Statistika — měsíční řada (modal „Statistika")
+         ========================================================= -->
+
+    <!--
+        Měsíční řada za zvolený rok. Tržby podle issue_date (ISSUED+PAID) **minus vystavené
+        dobropisy** v měsíci jejich vystavení — zrcadlí sumRevenue (KN-20). Marže stejná
+        logika jako sumMargin, včetně vynechání dobropisovaných faktur (V69).
+        Počet zakázek podle created_at (založené v měsíci) — počet vyfakturovaných
+        by kvůli pravidlu 1:1 faktura↔zakázka jen kopíroval počet faktur.
+        FULL JOIN přes měsíc: vrací jen měsíce, kde aspoň něco je.
+    -->
+    <select id="findMonthlyStats"
+            resultType="cz.palo.autoservis.model.dto.dashboard.DashboardDto$MonthlyStats">
+        WITH rev AS (
+            SELECT month, SUM(amount) AS revenue, SUM(invoice) AS invoiceCount
+            FROM (
+                SELECT EXTRACT(MONTH FROM i.issue_date)::int AS month,
+                       COALESCE(t.total_gross, 0)            AS amount,
+                       1                                     AS invoice
+                FROM billing.invoices i
+                LEFT JOIN billing.v_invoice_price_totals t ON t.invoice_id = i.id
+                WHERE i.status IN ('ISSUED', 'PAID')
+                  AND EXTRACT(YEAR FROM i.issue_date) = #{year}
+                UNION ALL
+                <!-- Vystavené dobropisy se odečítají v měsíci SVÉHO vystavení — stejné pravidlo
+                     jako v sumRevenue (KN-20). Bez toho tvrdila dlaždice „Tržby" jedno číslo
+                     a modal Statistika za týž měsíc jiné. Do počtu faktur se nepočítají:
+                     vystavená faktura vystavená byla, dobropis to nemění. -->
+                SELECT EXTRACT(MONTH FROM cn.issue_date)::int,
+                       -COALESCE(t.total_gross, 0),
+                       0
+                FROM billing.credit_notes cn
+                LEFT JOIN billing.v_invoice_price_totals t ON t.invoice_id = cn.original_invoice_id
+                WHERE cn.status = 'ISSUED'
+                  AND EXTRACT(YEAR FROM cn.issue_date) = #{year}
+            ) AS revenue_rows
+            GROUP BY month
+        ),
+        mar AS (
+            SELECT EXTRACT(MONTH FROM i.issue_date)::int                    AS month,
+                   SUM((oi.unit_price - oi.purchase_price) * oi.quantity)   AS margin
+            FROM "order".order_items oi
+            JOIN "order".orders o   ON o.id = oi.order_id
+            JOIN billing.invoices i ON i.order_id = o.id
+                                   AND i.status IN ('ISSUED', 'PAID')
+                                   AND i.credited_at IS NULL
+            WHERE oi.purchase_price IS NOT NULL
+              AND EXTRACT(YEAR FROM i.issue_date) = #{year}
+            GROUP BY 1
+        ),
+        ord AS (
+            SELECT EXTRACT(MONTH FROM o.created_at)::int AS month,
+                   COUNT(*)                              AS orderCount
+            FROM "order".orders o
+            WHERE o.is_active = TRUE
+              AND EXTRACT(YEAR FROM o.created_at) = #{year}
+            GROUP BY 1
+        )
+        SELECT COALESCE(rev.month, mar.month, ord.month) AS month,
+               COALESCE(rev.revenue, 0)                  AS revenue,
+               COALESCE(mar.margin, 0)                   AS margin,
+               COALESCE(ord.orderCount, 0)               AS orderCount,
+               COALESCE(rev.invoiceCount, 0)             AS invoiceCount
+        FROM rev
+        FULL JOIN mar ON mar.month = rev.month
+        FULL JOIN ord ON ord.month = COALESCE(rev.month, mar.month)
+        ORDER BY month
+    </select>
+
+    <!-- Roky, ve kterých existují data (pro select filtru), nejnovější první. -->
+    <select id="findStatsYears" resultType="int">
+        SELECT year FROM (
+            SELECT EXTRACT(YEAR FROM i.issue_date)::int AS year
+            FROM billing.invoices i
+            WHERE i.status IN ('ISSUED', 'PAID')
+            UNION
+            SELECT EXTRACT(YEAR FROM o.created_at)::int
+            FROM "order".orders o
+            WHERE o.is_active = TRUE
+        ) y
+        ORDER BY year DESC
+    </select>
+
+    <!-- =========================================================
+         Sklad
+         ========================================================= -->
+
+    <!-- Hodnota skladu z view V42 (přehled „pod minimem" a řádkové ocenění
+         bere service přímo z WarehouseMapper, ať se logika neduplikuje). -->
+    <select id="sumStockValue" resultType="java.math.BigDecimal">
+        SELECT COALESCE(SUM(v.stock_value), 0)
+        FROM warehouse.v_stock_valuation v
+    </select>
+
+    <select id="countPendingReceipts" resultType="int">
+        SELECT COUNT(*)
+        FROM warehouse.goods_receipts
+        WHERE status = 'PENDING_REVIEW'
+    </select>
+
+    <select id="findOpenStockTake"
+            resultType="cz.palo.autoservis.model.dto.dashboard.DashboardDto$OpenStockTake">
+        SELECT id        AS id,
+               note      AS note,
+               opened_at AS openedAt
+        FROM warehouse.stock_takes
+        WHERE status = 'OPEN'
+        LIMIT 1
+    </select>
+
+    <!-- =========================================================
+         Vozidla — STK
+         ========================================================= -->
+
+    <!-- Končící (≤ 30 dní) nebo propadlá STK; propadlé a nejbližší první.
+         Vozidla bez dat z registru se nezapočítávají (stk_valid_until IS NULL). -->
+    <select id="findStkExpiring"
+            resultType="cz.palo.autoservis.model.dto.dashboard.DashboardDto$VehiclePreview">
+        SELECT
+            v.id                            AS id,
+            v.license_plate                 AS licensePlate,
+            CONCAT_WS(' ', v.brand, v.model) AS label,
+            v.stk_valid_until               AS stkValidUntil,
+            (v.stk_valid_until &lt; CURRENT_DATE) AS expired
+        FROM vehicle.vehicles v
+        WHERE v.is_active = TRUE
+          AND v.stk_valid_until IS NOT NULL
+          AND v.stk_valid_until &lt;= CURRENT_DATE + INTERVAL '30 days'
+        ORDER BY v.stk_valid_until ASC
+    </select>
+
+</mapper>

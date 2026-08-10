@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="cs" xmlns:th="http://www.thymeleaf.org">
+<head>
+    <meta charset="UTF-8"/>
+    <title>Faktura</title>
+    <style th:replace="~{pdf/invoice-styles :: styles}"></style>
+</head>
+<body>
+
+<!-- Stav dokladu (E1.7/A3): koncept ani storno nesmí být zaměnitelné s platnou fakturou. -->
+<div th:if="${invoice.status != null and invoice.status.name() == 'DRAFT'}"
+     style="border: 3px solid #b30000; color: #b30000; text-align: center;
+            font-size: 18pt; font-weight: bold; padding: 6px; margin-bottom: 12px;">
+    NÁVRH — NENÍ DAŇOVÝ DOKLAD
+</div>
+<div th:if="${invoice.status != null and invoice.status.name() == 'CANCELLED'}"
+     style="border: 3px solid #b30000; color: #b30000; text-align: center;
+            font-size: 18pt; font-weight: bold; padding: 6px; margin-bottom: 12px;">
+    STORNOVÁNO
+</div>
+<!-- Zaplacená faktura se tiskne bez označení (přání uživatele 2026-08-08 — dřívější
+     razítko ZAPLACENO z KN-13 odstraněno). Ochrana proti druhé úhradě zůstává:
+     QR platba se u zaplaceného dokladu negeneruje (SpaydBuilder). -->
+
+<!-- Patička opakovaná na každé straně (running element) -->
+<div class="doc-footer">Faktura č. <span th:text="${invoice.invoiceNumber}">FA00000</span></div>
+
+<!-- ================= Hlavička ================= -->
+<header>
+    <table>
+        <tr>
+            <td style="width: 55%; vertical-align: middle;">
+                <img th:if="${logoDataUri}" th:src="${logoDataUri}"
+                     style="max-height: 110px; max-width: 320px;"/>
+            </td>
+            <td class="text-right" style="width: 45%; vertical-align: middle;">
+                <div class="party-block" style="font-size: 14pt; font-weight: bold;">
+                    FAKTURA č. <span th:text="${invoice.invoiceNumber}">FA00000</span>
+                </div>
+            </td>
+        </tr>
+    </table>
+</header>
+
+<!-- ================= Dodavatel | Odběratel ================= -->
+<section class="section">
+    <table>
+        <tr>
+            <td class="section-head" style="width: 50%;">Dodavatel</td>
+            <td class="section-head" style="width: 50%; border-left: 2px solid #fff;">Odběratel</td>
+        </tr>
+    </table>
+    <table class="parties keep-together">
+        <tr>
+            <!-- Dodavatel -->
+            <td>
+                <div class="party-line bold" th:text="${invoice.supplier?.name}">Firma s.r.o.</div>
+                <div class="party-line"
+                     th:text="|${invoice.supplier?.street} ${invoice.supplier?.streetNumber}|">Ulice 1</div>
+                <div class="party-line"
+                     th:text="|${invoice.supplier?.postalCode} ${invoice.supplier?.city}|">000 00 Město</div>
+                <div class="party-line"
+                     th:text="${invoice.supplier?.countryCode == 'CZ' ? 'Česká republika' : invoice.supplier?.countryCode}">Česká republika</div>
+
+                <div class="party-block">
+                    <div class="party-line" th:if="${invoice.supplier?.ico}">
+                        <span class="muted">IČ:</span> <span th:text="${invoice.supplier.ico}">00000000</span>
+                    </div>
+                    <div class="party-line" th:if="${invoice.supplier?.dic}">
+                        <span class="muted">DIČ:</span> <span th:text="${invoice.supplier.dic}">CZ00000000</span>
+                    </div>
+                </div>
+            </td>
+
+            <!-- Odběratel -->
+            <td>
+                <div class="party-line bold" th:text="${invoice.customer?.name}">Jan Novák</div>
+                <div class="party-line"
+                     th:text="|${invoice.customer?.street} ${invoice.customer?.streetNumber}|">Ulice 1</div>
+                <div class="party-line"
+                     th:text="|${invoice.customer?.postalCode} ${invoice.customer?.city}|">000 00 Město</div>
+                <div class="party-line"
+                     th:text="${invoice.customer?.countryCode == 'CZ' ? 'Česká republika' : invoice.customer?.countryCode}">Česká republika</div>
+
+                <div class="party-block">
+                    <div class="party-line" th:if="${invoice.customer?.ico}">
+                        <span class="muted">IČ:</span> <span th:text="${invoice.customer.ico}">00000000</span>
+                    </div>
+                    <div class="party-line" th:if="${invoice.customer?.dic}">
+                        <span class="muted">DIČ:</span> <span th:text="${invoice.customer.dic}">CZ00000000</span>
+                    </div>
+                    <!-- Nákupní objednávka odběratele (V91) — v jeho rámečku, aby bylo zřejmé,
+                         že jde o jeho číslo; účtárna podle něj fakturu páruje -->
+                    <div class="party-line" th:if="${invoice.purchaseOrderNumber}">
+                        Objednávka: <span th:text="${invoice.purchaseOrderNumber}"></span>
+                    </div>
+                </div>
+            </td>
+        </tr>
+    </table>
+</section>
+
+<!-- ================= Platební údaje ================= -->
+<section class="section">
+    <div class="section-head">Platební údaje</div>
+    <table class="two-col keep-together">
+        <tr class="two-col">
+            <!-- levý sloupec -->
+            <td>
+                <table class="kv">
+                    <tr>
+                        <td class="k">Způsob úhrady:</td>
+                        <td th:switch="${invoice.paymentMethod?.name()}">
+                            <span th:case="'CARD'">Kartou</span>
+                            <span th:case="'CASH'">Hotově</span>
+                            <span th:case="'TRANSFER'">Převodem</span>
+                            <span th:case="'CASH_OR_TRANSFER'">Hotově nebo převodem</span>
+                            <span th:case="'CASH_OR_CARD'">Hotově nebo kartou</span>
+                            <span th:case="'CARD_OR_TRANSFER'">Kartou nebo převodem</span>
+                            <span th:case="*" th:text="${invoice.paymentMethod}"></span>
+                        </td>
+                    </tr>
+                    <tr th:if="${invoice.supplier?.bankAccount}">
+                        <td class="k">Číslo účtu:</td>
+                        <td th:text="${invoice.supplier.bankAccount}">000000/0000</td>
+                    </tr>
+                    <tr>
+                        <td class="k bold">Variabilní symbol:</td>
+                        <td class="bold" th:text="${invoice.variableSymbol}">00000000</td>
+                    </tr>
+                    <tr th:if="${invoice.constantSymbol}">
+                        <td class="k">Konstantní symbol:</td>
+                        <td th:text="${invoice.constantSymbol}"></td>
+                    </tr>
+                    <tr th:if="${invoice.supplier?.iban}">
+                        <td class="k">IBAN:</td>
+                        <td th:text="${invoice.supplier.iban}"></td>
+                    </tr>
+                    <tr th:if="${invoice.supplier?.swift}">
+                        <td class="k">SWIFT:</td>
+                        <td th:text="${invoice.supplier.swift}"></td>
+                    </tr>
+                </table>
+            </td>
+
+            <!-- pravý sloupec -->
+            <td>
+                <table class="kv">
+                    <tr>
+                        <td class="k">Datum vystavení:</td>
+                        <td th:text="${#temporals.format(invoice.issueDate, 'dd.MM.yyyy')}">01.01.2025</td>
+                    </tr>
+                    <tr>
+                        <td class="k bold">Datum splatnosti:</td>
+                        <td class="bold" th:text="${#temporals.format(invoice.dueDate, 'dd.MM.yyyy')}">15.01.2025</td>
+                    </tr>
+                    <tr th:if="${invoice.taxableSupplyDate}">
+                        <td class="k">Datum zdan. plnění:</td>
+                        <td th:text="${#temporals.format(invoice.taxableSupplyDate, 'dd.MM.yyyy')}">01.01.2025</td>
+                    </tr>
+                </table>
+            </td>
+        </tr>
+    </table>
+</section>
+
+<!-- ================= Položky ================= -->
+<section class="section">
+    <div class="section-head">Položky k úhradě</div>
+
+    <table class="items" style="margin-top: 8px;">
+        <thead>
+        <tr>
+            <th style="width: 26%;">Název položky</th>
+            <th style="width: 7%;">Počet</th>
+            <th style="width: 6%;">M.J.</th>
+            <th style="width: 12%;">Cena za M.J.</th>
+            <th style="width: 8%;">DPH %</th>
+            <th style="width: 13%;">bez DPH</th>
+            <th style="width: 13%;">DPH</th>
+            <th style="width: 15%;">s DPH</th>
+        </tr>
+        </thead>
+        <tbody>
+        <tr th:each="item : ${invoice.items}">
+            <td th:text="${item.name}">Položka</td>
+            <td th:text="${#numbers.formatDecimal(item.quantity, 1, 'WHITESPACE', 2, 'COMMA')}">1,00</td>
+            <td th:text="${item.unit}">ks</td>
+            <td th:text="${#numbers.formatDecimal(item.unitPrice, 1, 'WHITESPACE', 2, 'COMMA')}">0,00</td>
+            <td th:text="${item.vatRate} + ' %'">21 %</td>
+            <td th:text="${#numbers.formatDecimal(item.net, 1, 'WHITESPACE', 2, 'COMMA')}">0,00</td>
+            <td th:text="${#numbers.formatDecimal(item.vat, 1, 'WHITESPACE', 2, 'COMMA')}">0,00</td>
+            <td th:text="${#numbers.formatDecimal(item.gross, 1, 'WHITESPACE', 2, 'COMMA')}">0,00</td>
+        </tr>
+        </tbody>
+    </table>
+</section>
+
+<!-- ================= Pata dokladu (drží pohromadě) =================
+     Rekapitulace DPH + součty + vozidlo + QR + podpis jsou jeden blok
+     s page-break-inside: avoid — buď se celá pata vejde na stranu, nebo
+     se celá přesune na další, ale nikdy se nerozdělí přes okraj (rozhodnutí B).
+     Div ctí openhtmltopdf spolehlivěji než tabulka; proto tu jednotlivé
+     tabulky už nemají vlastní keep-together — řídí to skupina. -->
+<div class="footer-group">
+
+<!-- ================= Rekapitulace DPH + Součty ================= -->
+<table style="margin-top: 12px;">
+    <tr>
+        <td style="width: 52%; vertical-align: top; padding-right: 20px;">
+            <!-- Rekapitulace DPH po sazbách (zákonná náležitost) -->
+            <table class="vat-summary">
+                <thead>
+                <tr>
+                    <th>Sazba DPH</th>
+                    <th>Základ</th>
+                    <th>Výše DPH</th>
+                    <th>Celkem</th>
+                </tr>
+                </thead>
+                <tbody>
+                <tr th:each="v : ${invoice.vatSummary}">
+                    <td th:text="${v.rate} + ' %'">21 %</td>
+                    <td th:text="${#numbers.formatDecimal(v.base, 1, 'WHITESPACE', 2, 'COMMA')}">0,00</td>
+                    <td th:text="${#numbers.formatDecimal(v.vat, 1, 'WHITESPACE', 2, 'COMMA')}">0,00</td>
+                    <td th:text="${#numbers.formatDecimal(v.total, 1, 'WHITESPACE', 2, 'COMMA')}">0,00</td>
+                </tr>
+                </tbody>
+            </table>
+        </td>
+        <td style="width: 48%; vertical-align: top;">
+            <!-- Celkové součty -->
+            <table class="totals">
+                <tr>
+                    <td class="muted">Základ daně:</td>
+                    <td class="text-right"
+                        th:text="${#numbers.formatDecimal(invoice.totalNet, 1, 'WHITESPACE', 2, 'COMMA')} + ' CZK'">0,00 CZK</td>
+                </tr>
+                <tr>
+                    <td class="muted">DPH:</td>
+                    <td class="text-right"
+                        th:text="${#numbers.formatDecimal(invoice.totalVat, 1, 'WHITESPACE', 2, 'COMMA')} + ' CZK'">0,00 CZK</td>
+                </tr>
+                <!-- Zaokrouhlení hotovostní úhrady na celé Kč. Samostatný řádek, protože
+                     dle §36 odst. 5 ZDPH nevstupuje do základu daně ani do rozpisu DPH
+                     (V67/KN-7). U nehotovostní úhrady je nulové a řádek se netiskne. -->
+                <tr th:if="${invoice.rounding != null and invoice.rounding.signum() != 0}">
+                    <td class="muted">Zaokrouhlení:</td>
+                    <td class="text-right"
+                        th:text="${#numbers.formatDecimal(invoice.rounding, 1, 'WHITESPACE', 2, 'COMMA')} + ' CZK'">0,00 CZK</td>
+                </tr>
+                <tr class="grand">
+                    <td>Celkem k úhradě:</td>
+                    <td class="text-right"
+                        th:text="${#numbers.formatDecimal(invoice.totalToPay, 1, 'WHITESPACE', 2, 'COMMA')} + ' CZK'">0,00 CZK</td>
+                </tr>
+            </table>
+        </td>
+    </tr>
+</table>
+
+<!-- ================= Vozidlo ================= -->
+<!-- Guard na značce, ne na VIN/SPZ: stroj bez obojího (V90, zahradní traktor) má
+     na dokladu figurovat značkou a modelem. Snapshot značky je vyplněný právě
+     tehdy, když zakázka vozidlo měla — brand je na vozidle NOT NULL. -->
+<div class="vehicle" th:if="${invoice.vehicleBrand != null}">
+    <span class="bold">Vozidlo:</span>
+    <span th:text="|${invoice.vehicleBrand} ${invoice.vehicleModel}|">Značka Model</span><br/>
+    <span th:if="${invoice.vehicleVin}">VIN: <span th:text="${invoice.vehicleVin}">00000000000000000</span></span>
+    <span th:if="${invoice.vehicleLicensePlate}"> &#160; SPZ: <span th:text="${invoice.vehicleLicensePlate}">0A0 0000</span></span>
+</div>
+
+<!-- ================= Patička (QR platba + razítko) ================= -->
+<table style="margin-top: 15px;">
+    <tr>
+        <td style="width: 35%; vertical-align: bottom;">
+            <div th:if="${qrDataUri}">
+                <img th:src="${qrDataUri}" alt="QR platba" style="width: 140px; height: 140px;"/>
+                <div class="muted" style="font-size: 8pt;">QR platba</div>
+            </div>
+        </td>
+        <td style="width: 65%; vertical-align: bottom;" class="footer-note">
+            <img th:if="${signature}" th:src="${signature}"
+                 style="display: block; margin-left: 120px; max-height: 110px; max-width: 320px;"/>
+            <div style="text-align: center;">Razítko a podpis dodavatele</div>
+        </td>
+    </tr>
+</table>
+
+</div><!-- /footer-group -->
+
+</body>
+</html>

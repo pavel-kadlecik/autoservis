@@ -1,0 +1,1 @@
+pka ALL=(root) NOPASSWD: /usr/bin/systemctl restart autoservis-backend, /usr/bin/systemctl start autoservis-backend, /usr/bin/systemctl stop autoservis-backend, /usr/bin/systemctl status autoservis-backend

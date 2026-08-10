@@ -1,0 +1,2 @@
+ALTER TABLE "order".order_items
+ALTER COLUMN name TYPE VARCHAR(500);

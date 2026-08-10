@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="cs" xmlns:th="http://www.thymeleaf.org">
+<head>
+    <meta charset="UTF-8"/>
+    <title>Zakázkový list</title>
+    <!-- Sdílené styly dokladů — zakázkový list má vypadat jako ostatní tisky ze systému. -->
+    <style th:replace="~{pdf/invoice-styles :: styles}"></style>
+</head>
+<body>
+
+<!-- Patička opakovaná na každé straně (running element) -->
+<div class="doc-footer">Zakázkový list č. <span th:text="${order.orderNumber}">ZAK-0000-0000</span></div>
+
+<!-- ================= Hlavička ================= -->
+<header>
+    <table>
+        <tr>
+            <td style="width: 30%; vertical-align: middle;">
+                <img th:if="${logoDataUri}" th:src="${logoDataUri}"
+                     style="max-height: 90px; max-width: 300px;"/>
+            </td>
+            <td class="text-right" style="width: 70%; vertical-align: middle;">
+                <div class="party-block" style="font-size: 14pt; font-weight: bold;">ZAKÁZKOVÝ LIST</div>
+                <div class="party-block" style="font-size: 12pt; font-weight: bold;">
+                    č. <span th:text="${order.orderNumber}">ZAK-0000-0000</span>
+                </div>
+                <div class="party-line muted">
+                    Přijato: <span th:text="${#temporals.format(order.receivedAt, 'dd.MM.yyyy')}">01.01.2026</span>
+                </div>
+            </td>
+        </tr>
+    </table>
+</header>
+
+<!-- ================= Servis a zákazník ================= -->
+<section class="section">
+    <table class="keep-together">
+        <tr>
+            <td style="width: 50%; vertical-align: top;">
+                <div class="section-head">Servis</div>
+                <div style="padding: 8px;">
+                    <div class="party-line bold" th:text="${company?.name}">Firma s.r.o.</div>
+                    <div class="party-line" th:text="|${company?.street} ${company?.streetNumber}|">Ulice 1</div>
+                    <div class="party-line" th:text="|${company?.postalCode} ${company?.city}|">000 00 Město</div>
+                    <div class="party-line" th:if="${company?.ico}">
+                        <span class="muted">IČ:</span> <span th:text="${company.ico}">00000000</span>
+                    </div>
+                    <div class="party-line" th:if="${company?.dic}">
+                        <span class="muted">DIČ:</span> <span th:text="${company.dic}">CZ00000000</span>
+                    </div>
+                </div>
+            </td>
+            <td style="width: 50%; vertical-align: top;">
+                <div class="section-head">Zákazník</div>
+                <div style="padding: 8px;">
+                    <div class="party-line bold" th:text="${customer.displayName}">Jan Novák</div>
+                    <div class="party-line" th:if="${address != null}"
+                         th:text="|${address.street} ${address.streetNumber}|">Ulice 2</div>
+                    <div class="party-line" th:if="${address != null}"
+                         th:text="|${address.postalCode} ${address.city}|">000 00 Město</div>
+                    <div class="party-line" th:if="${customer.ico}">
+                        <span class="muted">IČ:</span> <span th:text="${customer.ico}">00000000</span>
+                    </div>
+                    <div class="party-line" th:if="${customer.primaryPhone}">
+                        <span class="muted">Telefon:</span> <span th:text="${customer.primaryPhone}">+420 000 000 000</span>
+                    </div>
+                    <div class="party-line" th:if="${customer.primaryEmail}">
+                        <span class="muted">E-mail:</span> <span th:text="${customer.primaryEmail}">mail@example.cz</span>
+                    </div>
+                </div>
+            </td>
+        </tr>
+    </table>
+</section>
+
+<!-- ================= Vozidlo ================= -->
+<section class="section">
+    <div class="section-head">Převzaté vozidlo</div>
+    <table class="kv keep-together" style="padding: 8px;">
+        <tr>
+            <td class="k" style="width: 22%; padding: 4px 8px;">Vozidlo</td>
+            <td style="width: 28%; padding: 4px 8px;" class="bold"
+                th:text="|${vehicle.brand} ${vehicle.model}|">Značka Model</td>
+            <td class="k" style="width: 22%; padding: 4px 8px;">SPZ</td>
+            <td style="width: 28%; padding: 4px 8px;" class="bold"
+                th:text="${vehicle.licensePlate} ?: '—'">1AB 2345</td>
+        </tr>
+        <tr>
+            <!-- Stroj bez VIN (V90): na podepisovaném dokladu se identifikuje výrobním
+                 číslem — popisek se přepne, aby nelhal o tom, co číslo znamená. -->
+            <td class="k" style="padding: 4px 8px;"
+                th:text="${vehicle.vin != null ? 'VIN' : 'Výr. číslo'}">VIN</td>
+            <td style="padding: 4px 8px;"
+                th:text="${vehicle.vin} ?: (${vehicle.machineSerialNumber} ?: '—')">WBA00000000000000</td>
+            <td class="k" style="padding: 4px 8px;">Rok výroby</td>
+            <td style="padding: 4px 8px;" th:text="${vehicle.yearOfManufacture} ?: '—'">2018</td>
+        </tr>
+        <tr>
+            <!-- Stav tachometru je snímek z okamžiku příjmu (V70), ne aktuální stav vozu:
+                 tenhle papír zákazník podepsal a po dalších odečtech se nesmí změnit. -->
+            <td class="k" style="padding: 4px 8px;">Stav tachometru při příjmu</td>
+            <td style="padding: 4px 8px;" class="bold">
+                <span th:if="${order.mileageKmAtIntake != null}"
+                      th:text="|${#numbers.formatInteger(order.mileageKmAtIntake, 1, 'WHITESPACE')} km|">100 000 km</span>
+                <span th:if="${order.mileageKmAtIntake == null}" class="muted">nezaznamenán</span>
+            </td>
+            <td class="k" style="padding: 4px 8px;">Předpokládané dokončení</td>
+            <td style="padding: 4px 8px;"
+                th:text="${order.estimatedCompletionAt != null}
+                         ? ${#temporals.format(order.estimatedCompletionAt, 'dd.MM.yyyy')} : '—'">01.01.2026</td>
+        </tr>
+    </table>
+</section>
+
+<!-- ================= Požadovaná práce ================= -->
+<section class="section">
+    <div class="section-head">Požadovaná práce</div>
+    <div style="padding: 8px; line-height: 1.5; white-space: pre-line;"
+         th:text="${order.description}">Popis požadované práce.</div>
+</section>
+
+<!-- ================= Odhad ceny ================= -->
+<section class="section footer-group">
+    <div class="section-head">Odhad ceny</div>
+    <table class="totals">
+        <tr class="grand">
+            <td>Odhadovaná cena (s DPH)</td>
+            <td class="text-right">
+                <span th:if="${order.estimatedPrice != null}"
+                      th:text="|${#numbers.formatDecimal(order.estimatedPrice, 1, 'WHITESPACE', 2, 'COMMA')} Kč|">0,00 Kč</span>
+                <span th:if="${order.estimatedPrice == null}">neuveden</span>
+            </td>
+        </tr>
+    </table>
+
+    <!-- Odhad není konečná cena; §1746 NOZ zná dílo za odhadem určenou cenu a servis musí
+         navýšení oznámit. Věta je proto součástí dokladu, ne jen ústní domluvy. -->
+    <div style="padding: 8px 0; font-size: 9pt; line-height: 1.5;">
+        Zákazník předává vozidlo do servisu k provedení výše uvedené práce a souhlasí s odhadem ceny.
+        Vyjde-li během opravy najevo, že bude potřeba práce nad uvedený rozsah, servis zákazníka
+        předem vyrozumí a bez jeho souhlasu ji neprovede. Konečná cena bude vyúčtována daňovým
+        dokladem po dokončení zakázky.
+    </div>
+
+    <!-- ================= Podpisy ================= -->
+    <table style="margin-top: 24px;">
+        <tr>
+            <td style="width: 50%; padding-right: 20px;">
+                <div style="border-top: 1px solid #000; padding-top: 4px; font-size: 9pt; color: #555;">
+                    Za servis — datum a podpis
+                </div>
+            </td>
+            <td style="width: 50%; padding-left: 20px;">
+                <div style="border-top: 1px solid #000; padding-top: 4px; font-size: 9pt; color: #555;">
+                    Zákazník — datum a podpis
+                </div>
+            </td>
+        </tr>
+    </table>
+</section>
+
+</body>
+</html>

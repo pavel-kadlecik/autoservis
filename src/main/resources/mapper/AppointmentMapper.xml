@@ -1,0 +1,257 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+
+<!--
+    AppointmentMapper.xml — SQL pro cz.palo.autoservis.mapper.AppointmentMapper
+    Tabulka: schedule.appointments (vždy plně kvalifikovaná, R-02)
+
+    ENUM sloupce se vážou přes PgEnumTypeHandler; PostgreSQL odmítá holý VARCHAR
+    parametr pro typovaný ENUM sloupec, proto explicitní typeHandler na každé vazbě.
+-->
+<mapper namespace="cz.palo.autoservis.mapper.AppointmentMapper">
+
+    <!-- =========================================================
+         Result map
+         ========================================================= -->
+
+    <resultMap id="AppointmentResultMap" type="cz.palo.autoservis.model.domain.schedule.Appointment">
+        <id     property="id"                  column="id"/>
+        <result property="entryType"           column="entry_type"/>
+        <result property="title"               column="title"/>
+        <result property="note"                column="note"/>
+        <result property="startsAt"            column="starts_at"/>
+        <result property="endsAt"              column="ends_at"/>
+        <result property="customerId"          column="customer_id"/>
+        <result property="contactNote"         column="contact_note"/>
+        <result property="vehicleId"           column="vehicle_id"/>
+        <result property="orderId"             column="order_id"/>
+        <result property="employeeId"          column="employee_id"/>
+        <result property="status"              column="status"/>
+        <result property="createdAt"           column="created_at"/>
+        <result property="updatedAt"           column="updated_at"/>
+        <result property="createdBy"           column="created_by"/>
+        <!-- projekce z JOINu — nejsou sloupce schedule.appointments, nikdy se nezapisují -->
+        <result property="customerDisplayName" column="customer_display_name"/>
+        <result property="vehicleLicensePlate" column="vehicle_license_plate"/>
+        <result property="vehicleBrand"        column="vehicle_brand"/>
+        <result property="vehicleModel"        column="vehicle_model"/>
+        <result property="vehicleVin"          column="vehicle_vin"/>
+        <result property="orderNumber"         column="order_number"/>
+        <result property="employeeDisplayName" column="employee_display_name"/>
+    </resultMap>
+
+    <!-- =========================================================
+         Reusable SQL fragments
+         ========================================================= -->
+
+    <sql id="appointmentColumns">
+        a.id, a.entry_type, a.title, a.note,
+        a.starts_at, a.ends_at,
+        a.customer_id, a.contact_note, a.vehicle_id, a.order_id, a.employee_id,
+        a.status,
+        a.created_at, a.updated_at, a.created_by
+    </sql>
+
+    <!-- Zobrazované jméno zákazníka spočítané z diskriminátoru typu (stejné pravidlo jako OrderMapper). -->
+    <sql id="customerDisplayName">
+        CASE
+            WHEN c.customer_type = 'COMPANY' THEN c.company_name
+            ELSE c.first_name || ' ' || c.last_name
+        END AS customer_display_name
+    </sql>
+
+    <sql id="vehicleColumns">
+        v.license_plate AS vehicle_license_plate,
+        v.brand         AS vehicle_brand,
+        v.model         AS vehicle_model,
+        v.vin           AS vehicle_vin
+    </sql>
+
+    <!-- Blokace i objednávka mají volitelné vazby, proto všude LEFT JOIN. -->
+    <sql id="joins">
+        LEFT JOIN customer.customers  AS c ON c.id = a.customer_id
+        LEFT JOIN vehicle.vehicles    AS v ON v.id = a.vehicle_id
+        LEFT JOIN "order".orders      AS o ON o.id = a.order_id
+        LEFT JOIN employee.employees  AS e ON e.id = a.employee_id
+    </sql>
+
+    <sql id="selectBase">
+        SELECT <include refid="appointmentColumns"/>,
+               <include refid="customerDisplayName"/>,
+               <include refid="vehicleColumns"/>,
+               o.order_number AS order_number,
+               e.first_name || ' ' || e.last_name AS employee_display_name
+        FROM schedule.appointments AS a
+        <include refid="joins"/>
+    </sql>
+
+    <!--
+        Překryv dvou období [a,b) a [c,d) nastává právě když  a &lt; d  AND  c &lt; b.
+        Událost začínající před oknem a končící v něm tedy vyhoví — bez toho by
+        vícedenní blokace z týdenního pohledu zmizela.
+
+        COALESCE řeší objednávku bez známého konce (V74): `#{from} &lt; NULL` je NULL,
+        takže by taková objednávka z kalendáře úplně vypadla. Pro účely rozsahu se
+        chová jako událost dlouhá jednu sekundu — leží v okně, které obsahuje její příjezd,
+        a nikde jinde. Žádná smyšlená délka se tím nezavádí.
+    -->
+    <sql id="openEndedEnd">
+        COALESCE(a.ends_at, a.starts_at + INTERVAL '1 second')
+    </sql>
+
+    <sql id="overlapsWindow">
+        a.starts_at &lt; #{to} AND #{from} &lt; <include refid="openEndedEnd"/>
+    </sql>
+
+    <!-- =========================================================
+         Queries
+         ========================================================= -->
+
+    <select id="findInRange" resultMap="AppointmentResultMap">
+        <include refid="selectBase"/>
+        WHERE <include refid="overlapsWindow"/>
+        <if test="entryType != null">
+            AND a.entry_type = #{entryType, typeHandler=cz.palo.autoservis.config.mybatis.PgEnumTypeHandler$AppointmentTypeHandler}
+        </if>
+        <if test="status != null">
+            AND a.status = #{status, typeHandler=cz.palo.autoservis.config.mybatis.PgEnumTypeHandler$AppointmentStatusHandler}
+        </if>
+        ORDER BY a.starts_at, a.id
+    </select>
+
+    <select id="findById" resultMap="AppointmentResultMap">
+        <include refid="selectBase"/>
+        WHERE a.id = #{id}
+    </select>
+
+    <select id="findByOrderId" resultMap="AppointmentResultMap">
+        <include refid="selectBase"/>
+        WHERE a.order_id = #{orderId}
+    </select>
+
+    <!--
+        Měkké varování: překryv objednávek se nezakazuje (servis běžně dělá na dvou autech
+        naráz), jen se spočítá a nabídne uživateli k rozhodnutí.
+    -->
+    <select id="findOverlappingBookings" resultMap="AppointmentResultMap">
+        <include refid="selectBase"/>
+        WHERE a.entry_type = 'BOOKING'
+          AND a.status NOT IN ('CANCELLED', 'NO_SHOW')
+          AND a.starts_at &lt; #{endsAt}
+          AND #{startsAt} &lt; <include refid="openEndedEnd"/>
+        <if test="excludeId != null">
+            AND a.id &lt;&gt; #{excludeId}
+        </if>
+        ORDER BY a.starts_at, a.id
+    </select>
+
+    <!-- Tvrdé pravidlo: do zavřené dílny se objednat nedá. -->
+    <select id="countBlockingClosures" resultType="int">
+        SELECT COUNT(*)
+        FROM schedule.appointments AS a
+        WHERE a.entry_type = 'CLOSURE'
+          AND a.status &lt;&gt; 'CANCELLED'
+          AND a.starts_at &lt; #{endsAt}
+          AND #{startsAt} &lt; a.ends_at
+        <if test="excludeId != null">
+            AND a.id &lt;&gt; #{excludeId}
+        </if>
+    </select>
+
+    <!--
+        Opačný směr než countBlockingClosures: co brání vzniku BLOKACE.
+
+        Zavřít dílnu na dobu, na kterou už někdo přijede, je vždy chyba — buď se objednávka
+        přesune, nebo se zavírá jindy. Bez téhle kontroly šlo blokaci prostě nakreslit přes
+        objednávku a kalendář pak tvrdil obojí naráz.
+
+        Počítají se objednávky i události; zrušené a nedostavené ne — ty už nikdo nečeká
+        (totéž pravidlo jako u findOverlappingBookings).
+    -->
+    <select id="countEntriesBlockingClosure" resultType="int">
+        SELECT COUNT(*)
+        FROM schedule.appointments AS a
+        WHERE a.entry_type IN ('BOOKING', 'EVENT')
+          AND a.status NOT IN ('CANCELLED', 'NO_SHOW')
+          AND a.starts_at &lt; #{endsAt}
+          AND #{startsAt} &lt; <include refid="openEndedEnd"/>
+        <if test="excludeId != null">
+            AND a.id &lt;&gt; #{excludeId}
+        </if>
+    </select>
+
+    <!-- =========================================================
+         Writes
+         ========================================================= -->
+
+    <insert id="insert" parameterType="cz.palo.autoservis.model.domain.schedule.Appointment"
+            useGeneratedKeys="true" keyProperty="id" keyColumn="id">
+        INSERT INTO schedule.appointments (
+            entry_type, title, note, starts_at, ends_at,
+            customer_id, contact_note, vehicle_id, employee_id, created_by
+        ) VALUES (
+            #{entryType, typeHandler=cz.palo.autoservis.config.mybatis.PgEnumTypeHandler$AppointmentTypeHandler},
+            #{title}, #{note}, #{startsAt}, #{endsAt},
+            #{customerId}, #{contactNote}, #{vehicleId}, #{employeeId}, #{createdBy}
+        )
+    </insert>
+
+    <update id="update" parameterType="cz.palo.autoservis.model.domain.schedule.Appointment">
+        UPDATE schedule.appointments
+        SET title        = #{title},
+            note         = #{note},
+            starts_at    = #{startsAt},
+            ends_at      = #{endsAt},
+            customer_id  = #{customerId},
+            contact_note = #{contactNote},
+            vehicle_id   = #{vehicleId},
+            employee_id  = #{employeeId}
+        WHERE id = #{id}
+    </update>
+
+    <update id="updateTime">
+        UPDATE schedule.appointments
+        SET starts_at = #{startsAt},
+            ends_at   = #{endsAt}
+        WHERE id = #{id}
+    </update>
+
+    <update id="updateStatus">
+        UPDATE schedule.appointments
+        SET status = #{status, typeHandler=cz.palo.autoservis.config.mybatis.PgEnumTypeHandler$AppointmentStatusHandler}
+        WHERE id = #{id}
+    </update>
+
+    <!--
+        Odpojení objednávky od mazané zakázky (V84) — opak linkOrder.
+        Smazaná zakázka byla omyl, ale termín domluvený se zákazníkem omyl nebyl: vrátí se
+        na PLANNED, zůstane v kalendáři a jde ho převést znovu.
+        order_id a status se mění společně, jinak by CHECK chk_appointments_converted_order
+        neprošel.
+    -->
+    <update id="unlinkOrder">
+        UPDATE schedule.appointments
+        SET order_id = NULL,
+            status   = 'PLANNED'
+        WHERE order_id = #{orderId}
+    </update>
+
+    <!-- order_id a status se mění společně: CHECK chk_appointments_converted_order je váže k sobě. -->
+    <update id="linkOrder">
+        UPDATE schedule.appointments
+        SET order_id = #{orderId},
+            status   = 'CONVERTED'
+        WHERE id = #{id}
+    </update>
+
+    <!--
+        Tvrdé smazání (V76). Objednávka není doklad a nic na ni neodkazuje, takže deaktivovaný
+        záznam by tu jen ležel. Zrušení termínu je stav CANCELLED, ne tohle.
+    -->
+    <delete id="delete">
+        DELETE FROM schedule.appointments
+        WHERE id = #{id}
+    </delete>
+
+</mapper>

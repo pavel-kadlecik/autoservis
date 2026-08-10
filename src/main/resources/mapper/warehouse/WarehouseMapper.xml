@@ -1,0 +1,364 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+
+<!--
+    WarehouseMapper.xml — SQL pro cz.palo.autoservis.mapper.WarehouseMapper
+    Tabulka: warehouse.products (vždy plně kvalifikovaná dle konvence projektu).
+    quantity_on_hand je denormalizovaná cache udržovaná triggerem nad pohyby.
+    Projekce šarží/pohybů se mapují přímo na vnořená DTO ProductDto přes aliasy
+    sloupců (camelCase), takže nezávisejí na map-underscore-to-camel-case.
+-->
+<mapper namespace="cz.palo.autoservis.mapper.WarehouseMapper">
+
+    <!-- =========================================================
+         Result map / reusable columns
+         ========================================================= -->
+
+    <resultMap id="ProductResultMap" type="cz.palo.autoservis.model.domain.warehouse.Product">
+        <id     property="id"             column="id"/>
+        <result property="sku"            column="sku"/>
+        <result property="name"           column="name"/>
+        <result property="manufacturer"   column="manufacturer"/>
+        <result property="manufacturerPartNumber" column="manufacturer_part_number"/>
+        <result property="partNumberNormalized"   column="part_number_normalized"/>
+        <result property="variant"        column="variant"/>
+        <result property="note"           column="note"/>
+        <result property="unit"           column="unit"/>
+        <result property="defaultVatRate" column="default_vat_rate"/>
+        <result property="salePrice"      column="sale_price"/>
+        <result property="minStockLevel"  column="min_stock_level"/>
+        <result property="quantityOnHand" column="quantity_on_hand"/>
+        <!-- Odvozené, ne sloupec tabulky — viz <sql id="reservedQuantity"/>. -->
+        <result property="quantityReserved" column="quantity_reserved"/>
+        <result property="active"         column="is_active"/>
+        <result property="createdAt"      column="created_at"/>
+        <result property="updatedAt"      column="updated_at"/>
+    </resultMap>
+
+    <sql id="productColumns">
+        p.id, p.sku, p.name, p.manufacturer, p.manufacturer_part_number, p.part_number_normalized,
+        p.variant, p.note, p.unit, p.default_vat_rate,
+        p.sale_price, p.min_stock_level, p.quantity_on_hand, p.is_active, p.created_at, p.updated_at,
+        <include refid="reservedQuantity"/> AS quantity_reserved
+    </sql>
+
+    <!-- Dynamická WHERE klauzule sdílená search a countSearch. -->
+    <!--
+        Rezervované množství produktu — díly naplánované na zakázky, které ze skladu
+        fyzicky ještě neodešly.
+
+        NEUKLÁDÁ SE, odvozuje se: „položka s vazbou na šarži, na neuzavřené zakázce,
+        ke které zatím neexistuje výdejový pohyb" (V83). Druhý uložený příznak vedle
+        ledgeru by se s ním mohl rozejít, takže jediným zdrojem pravdy zůstává ledger.
+
+        Fyzického stavu (quantity_on_hand) se rezervace NEDOTÝKÁ — ten drží pohybový
+        ledger a porovnává se proti němu inventura. Rezervace snižuje jen DOSTUPNÉ
+        množství. Kdyby vstupovala do fyzického stavu, hlásila by inventura manko
+        u dílů, které klidně leží v regálu.
+
+        Ručně zadaná položka materiálu (bez vazby na šarži) nerezervuje nic —
+        vypadne sama na `goods_receipt_item_id IS NOT NULL` uvnitř JOINu.
+
+        Vyžaduje `warehouse.products p` v dosahu volajícího dotazu.
+    -->
+    <sql id="reservedQuantity">
+        COALESCE((
+            SELECT SUM(oi.quantity)
+              FROM "order".order_items oi
+              JOIN "order".orders o                  ON o.id   = oi.order_id
+              JOIN warehouse.goods_receipt_items gri ON gri.id = oi.goods_receipt_item_id
+             WHERE gri.product_id = p.id
+               AND o.status NOT IN ('COMPLETED', 'CANCELLED')
+               AND NOT EXISTS (SELECT 1
+                                 FROM warehouse.stock_movements m
+                                WHERE m.order_item_id = oi.id
+                                  AND m.movement_type = 'ISSUE')
+        ), 0)
+    </sql>
+
+    <sql id="searchWhere">
+        <where>
+            <if test="params.activeOnly">
+                p.is_active = TRUE
+            </if>
+            <if test="params.search != null and params.search != ''">
+                <bind name="searchLike" value="'%' + params.search + '%'"/>
+                AND (
+                    LOWER(p.sku)  LIKE LOWER(#{searchLike})
+                    OR LOWER(p.name) LIKE LOWER(#{searchLike})
+                )
+            </if>
+            <!--
+                Pod minimem se hlídá DOSTUPNÉ množství, ne fyzický stav (rozhodnutí
+                uživatele 2026-08-05). Díl, který sice leží v regálu, ale je celý
+                slíbený jiné zakázce, je pro další práci stejně nedostupný — proti
+                fyzickému stavu by se pod minimem objevil až ve chvíli, kdy fyzicky
+                odejde, tedy pozdě na objednání.
+            -->
+            <if test="params.lowStockOnly">
+                AND p.min_stock_level IS NOT NULL
+                AND p.quantity_on_hand - <include refid="reservedQuantity"/> &lt; p.min_stock_level
+            </if>
+        </where>
+    </sql>
+
+    <!-- =========================================================
+         Select — list
+         ========================================================= -->
+
+    <select id="search" resultMap="ProductResultMap">
+        SELECT <include refid="productColumns"/>
+        FROM warehouse.products p
+        <include refid="searchWhere"/>
+        ORDER BY <include refid="productSortOrder"/>
+        LIMIT #{params.pageSize} OFFSET #{params.offset}
+    </select>
+
+    <!--
+        Whitelist seřaditelných sloupců (TD-46, U3R.1); výchozí klíč `name` nastavuje
+        ProductSearchParams. Hodnota zásoby se neřadí — počítá se až z view
+        v_stock_valuation mimo tento dotaz a FE si ji páruje podle productId.
+    -->
+    <sql id="productSortOrder">
+        <choose>
+            <when test="params.sortBy == 'sku'">
+                p.sku <if test="params.sortDesc">DESC</if>, p.id <if test="params.sortDesc">DESC</if>
+            </when>
+            <when test="params.sortBy == 'quantityOnHand'">
+                p.quantity_on_hand <if test="params.sortDesc">DESC</if>, p.id <if test="params.sortDesc">DESC</if>
+            </when>
+            <when test="params.sortBy == 'salePrice'">
+                p.sale_price <if test="params.sortDesc">DESC</if> NULLS LAST, p.id <if test="params.sortDesc">DESC</if>
+            </when>
+            <when test="params.sortBy == 'unit'">
+                p.unit <if test="params.sortDesc">DESC</if>,
+                p.name <if test="params.sortDesc">DESC</if>,
+                p.id <if test="params.sortDesc">DESC</if>
+            </when>
+            <otherwise>
+                p.name <if test="params.sortDesc">DESC</if>, p.id <if test="params.sortDesc">DESC</if>
+            </otherwise>
+        </choose>
+    </sql>
+
+    <select id="countSearch" resultType="java.lang.Long">
+        SELECT COUNT(*)
+        FROM warehouse.products p
+        <include refid="searchWhere"/>
+    </select>
+
+    <!-- =========================================================
+         Select — single (stock card detail)
+         ========================================================= -->
+
+    <select id="findById" resultMap="ProductResultMap">
+        SELECT <include refid="productColumns"/>
+        FROM warehouse.products p
+        WHERE p.id = #{id}
+    </select>
+
+    <!--
+        Zakázky, které díl drží rezervovaný — naplánovaly si ho, ale ze skladu ještě
+        neodešel (V83). Týž predikát jako fragment `reservedQuantity`, jen rozepsaný
+        po zakázkách místo součtu: položka s vazbou na šarži tohoto produktu, na
+        neuzavřené zakázce, ke které neexistuje výdejový pohyb.
+
+        Odpovídá na otázku „proč je dostupné míň, než mám v regálu" — obsluha vidí,
+        kdo si díl slíbil, a může se domluvit na přerovnání místo objednávání.
+
+        Součet za zakázku: jedna zakázka může mít z různých šarží téhož dílu víc řádků
+        a vypisovat je zvlášť by jen mátlo. Nejnovější rezervace první.
+    -->
+    <select id="findReservationsByProductId"
+            resultType="cz.palo.autoservis.model.dto.warehouse.ProductDto$ReservationResponse">
+        SELECT
+            o.id                          AS orderId,
+            o.order_number                AS orderNumber,
+            <!-- Týž tvar jako OrderMapper.customerDisplayName; ten fragment má vlastní
+                 alias, takže se sem znovupoužít nedá. -->
+            CASE
+                WHEN c.customer_type = 'COMPANY' THEN c.company_name
+                ELSE c.first_name || ' ' || c.last_name
+            END                           AS customerName,
+            o.status::text                AS orderStatus,
+            SUM(oi.quantity)              AS quantity,
+            MAX(oi.created_at)            AS reservedAt
+        FROM "order".order_items AS oi
+        JOIN "order".orders      AS o   ON o.id  = oi.order_id
+        JOIN warehouse.goods_receipt_items AS gri ON gri.id = oi.goods_receipt_item_id
+        LEFT JOIN customer.customers AS c ON c.id = o.customer_id
+        WHERE gri.product_id = #{productId}
+          AND o.status NOT IN ('COMPLETED', 'CANCELLED')
+          AND NOT EXISTS (SELECT 1
+                            FROM warehouse.stock_movements m
+                           WHERE m.order_item_id = oi.id
+                             AND m.movement_type = 'ISSUE')
+        GROUP BY o.id, o.order_number, o.status,
+                 c.customer_type, c.company_name, c.first_name, c.last_name
+        ORDER BY MAX(oi.created_at) DESC
+    </select>
+
+    <!-- Šarže produktu s původem — odkaz na fakturu/objednávku/dodavatele. -->
+    <select id="findBatchesByProductId"
+            resultType="cz.palo.autoservis.model.dto.warehouse.ProductDto$BatchResponse">
+        SELECT
+            gri.id                  AS batchId,
+            gri.name_snapshot       AS nameSnapshot,
+            gri.quantity_received   AS quantityReceived,
+            gri.quantity_remaining  AS quantityRemaining,
+            gri.unit_price_excl_vat AS unitPriceExclVat,
+            gr.invoice_number       AS invoiceNumber,
+            gr.order_number         AS orderNumber,
+            gr.issue_date           AS issueDate,
+            COALESCE(s.name, gr.supplier_name_snapshot) AS supplierName
+        FROM warehouse.goods_receipt_items gri
+        JOIN warehouse.goods_receipts gr ON gr.id = gri.goods_receipt_id
+        LEFT JOIN warehouse.suppliers s  ON s.id  = gr.supplier_id
+        WHERE gri.product_id = #{productId}
+        ORDER BY gr.issue_date DESC NULLS LAST, gri.id DESC
+    </select>
+
+    <!-- Skladové pohyby produktu, nejnovější první; order_number joinovaný pro kontext. -->
+    <select id="findMovementsByProductId"
+            resultType="cz.palo.autoservis.model.dto.warehouse.ProductDto$MovementResponse">
+        SELECT
+            m.id                 AS id,
+            m.movement_type      AS movementType,
+            m.quantity           AS quantity,
+            m.moved_at           AS movedAt,
+            m.order_id           AS orderId,
+            o.order_number       AS orderNumber,
+            m.return_reason      AS returnReason,
+            m.credit_note_number AS creditNoteNumber,
+            m.note               AS note
+        FROM warehouse.stock_movements m
+        LEFT JOIN "order".orders o ON o.id = m.order_id
+        WHERE m.product_id = #{productId}
+        ORDER BY m.moved_at DESC, m.id DESC
+    </select>
+
+    <!-- =========================================================
+         Insert / Update / Soft delete / Reactivate / Existence
+         ========================================================= -->
+
+    <!-- quantity_on_hand je záměrně vynecháno (DB default 0; mění ho jedině pohyby). -->
+    <insert id="insert" parameterType="cz.palo.autoservis.model.domain.warehouse.Product"
+            useGeneratedKeys="true" keyProperty="id" keyColumn="id">
+        INSERT INTO warehouse.products (
+            sku, name, manufacturer, manufacturer_part_number, variant, note, unit,
+            default_vat_rate, sale_price, min_stock_level, is_active
+        ) VALUES (
+            #{sku}, #{name}, #{manufacturer}, #{manufacturerPartNumber}, #{variant}, #{note}, #{unit},
+            #{defaultVatRate}, #{salePrice}, #{minStockLevel}, COALESCE(#{active}, TRUE)
+        )
+    </insert>
+
+    <!-- is_active a quantity_on_hand se tady NEaktualizují; updated_at přes trigger. -->
+    <update id="update" parameterType="cz.palo.autoservis.model.domain.warehouse.Product">
+        UPDATE warehouse.products
+        SET sku              = #{sku},
+            name             = #{name},
+            manufacturer     = #{manufacturer},
+            manufacturer_part_number = #{manufacturerPartNumber},
+            variant          = #{variant},
+            note             = #{note},
+            unit             = #{unit},
+            default_vat_rate = #{defaultVatRate},
+            sale_price       = #{salePrice},
+            min_stock_level  = #{minStockLevel}
+        WHERE id = #{id}
+    </update>
+
+    <update id="deactivate">
+        UPDATE warehouse.products SET is_active = FALSE WHERE id = #{id}
+    </update>
+
+    <update id="activate">
+        UPDATE warehouse.products SET is_active = TRUE WHERE id = #{id}
+    </update>
+
+    <select id="existsBySku" resultType="boolean">
+        SELECT EXISTS(SELECT 1 FROM warehouse.products WHERE sku = #{sku})
+    </select>
+
+    <select id="findByGoodsReceiptId" resultType="cz.palo.autoservis.model.domain.warehouse.Product">
+        SELECT
+            <include refid="productColumns"/>
+        FROM warehouse.products p
+        WHERE id IN (
+            SELECT gri.product_id
+            FROM warehouse.goods_receipt_items gri
+            WHERE gri.goods_receipt_id = #{id}
+        )
+    </select>
+
+    <!--
+        Díly pod hlídaným minimem i s doporučeným dodavatelem (E8.3, P-7).
+        Doporučení = poslední záznam v převodníku supplier_products (LATERAL),
+        tedy dodavatel, který díl dodal naposledy, a jeho poslední cena.
+        Díl bez záznamu v převodníku se vypíše taky — jen bez doporučení.
+    -->
+    <select id="findLowStock" resultType="cz.palo.autoservis.model.dto.warehouse.LowStockDto">
+        SELECT
+            p.id                       AS productId,
+            p.sku                      AS sku,
+            p.name                     AS name,
+            p.unit                     AS unit,
+            p.quantity_on_hand         AS quantityOnHand,
+            <include refid="reservedQuantity"/> AS quantityReserved,
+            p.quantity_on_hand - <include refid="reservedQuantity"/> AS quantityAvailable,
+            p.min_stock_level          AS minStockLevel,
+            p.min_stock_level - (p.quantity_on_hand - <include refid="reservedQuantity"/>) AS missingQuantity,
+            last_supplier.supplier_id  AS supplierId,
+            s.name                     AS supplierName,
+            last_supplier.supplier_sku AS supplierSku,
+            last_supplier.last_unit_price_excl_vat AS lastUnitPriceExclVat,
+            last_supplier.last_seen_at AS lastSeenAt
+        FROM warehouse.products p
+        LEFT JOIN LATERAL (
+            SELECT sp.supplier_id, sp.supplier_sku, sp.last_unit_price_excl_vat, sp.last_seen_at
+            FROM warehouse.supplier_products sp
+            WHERE sp.product_id = p.id
+            ORDER BY sp.last_seen_at DESC, sp.id DESC
+            LIMIT 1
+        ) AS last_supplier ON TRUE
+        LEFT JOIN warehouse.suppliers s ON s.id = last_supplier.supplier_id
+        WHERE p.is_active = TRUE
+        AND p.min_stock_level IS NOT NULL
+        <!-- Proti DOSTUPNÉMU, ne proti fyzickému stavu — týž předpis jako filtr
+             `lowStockOnly` v seznamu skladu. Dokud se to lišilo, dávaly dvě obrazovky
+             na tutéž otázku různé odpovědi. -->
+        AND p.quantity_on_hand - <include refid="reservedQuantity"/> &lt; p.min_stock_level
+        ORDER BY (p.min_stock_level - (p.quantity_on_hand - <include refid="reservedQuantity"/>)) DESC, p.name
+    </select>
+
+    <!--
+        Ocenění zásob z view V42 (v_stock_valuation) — hodnota se počítá v DB,
+        stejně jako u cenových views V25/V32/V37. Aliasy v camelCase, ať mapování
+        nezávisí na map-underscore-to-camel-case (viz hlavička souboru).
+    -->
+    <select id="findStockValuation"
+            resultType="cz.palo.autoservis.model.dto.warehouse.StockValuationDto$Item">
+        SELECT
+            v.product_id       AS productId,
+            v.sku              AS sku,
+            v.name             AS name,
+            v.unit             AS unit,
+            v.quantity_on_hand AS quantityOnHand,
+            v.stock_value      AS stockValue
+        FROM warehouse.v_stock_valuation v
+        ORDER BY v.name
+    </select>
+
+    <select id="findByIds" resultMap="ProductResultMap">
+        SELECT
+            <include refid="productColumns"/>
+            FROM warehouse.products p
+        WHERE id IN
+              <foreach collection="ids" item="id" open="(" separator="," close=")">
+                #{id}
+             </foreach>
+    </select>
+
+</mapper>

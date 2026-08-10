@@ -1,0 +1,256 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+
+<!--
+    ReceiptReviewMapper.xml — SQL for cz.palo.autoservis.mapper.ReceiptReviewMapper
+    Review workflow příjemek: seznam, detail, uložení draftu, potvrzení/zamítnutí.
+
+    Zásady:
+    - source_pdf (BYTEA) se NIKDY nenačítá v seznamu ani detailu — má vlastní select;
+    - přechody stavů jsou guarded (WHERE status = 'PENDING_REVIEW') a vracejí
+      počet řádků — optimistická kontrola souběhu (dvojí confirm = 0 řádků).
+-->
+<mapper namespace="cz.palo.autoservis.mapper.ReceiptReviewMapper">
+
+    <resultMap id="ReceiptResultMap" type="cz.palo.autoservis.model.domain.warehouse.GoodsReceipt">
+        <id     property="id"                   column="id"/>
+        <result property="supplierId"           column="supplier_id"/>
+        <result property="supplierNameSnapshot" column="supplier_name_snapshot"/>
+        <result property="invoiceNumber"        column="invoice_number"/>
+        <result property="orderNumber"          column="order_number"/>
+        <result property="originalOrderNumber"  column="original_order_number"/>
+        <result property="issueDate"            column="issue_date"/>
+        <result property="dueDate"              column="due_date"/>
+        <result property="taxableSupplyDate"    column="taxable_supply_date"/>
+        <result property="subtotal"             column="subtotal"/>
+        <result property="vatAmount"            column="vat_amount"/>
+        <result property="totalAmount"          column="total_amount"/>
+        <result property="currency"             column="currency"/>
+        <result property="documentType"         column="document_type"/>
+        <result property="sourceChannel"        column="source_channel"/>
+        <result property="status"               column="status"/>
+        <result property="reconciliationOk"     column="reconciliation_ok"/>
+        <result property="extractionModel"      column="extraction_model"/>
+        <result property="sourceFilename"       column="source_filename"/>
+        <result property="draftPayload"         column="draft_payload"/>
+        <result property="confirmedAt"          column="confirmed_at"/>
+        <result property="confirmedBy"          column="confirmed_by"/>
+        <result property="rejectedAt"           column="rejected_at"/>
+        <result property="rejectedBy"           column="rejected_by"/>
+        <result property="rejectionNote"        column="rejection_note"/>
+        <result property="cancelledAt"          column="cancelled_at"/>
+        <result property="cancelledBy"          column="cancelled_by"/>
+        <result property="cancellationNote"     column="cancellation_note"/>
+        <result property="createdBy"            column="created_by"/>
+        <result property="createdAt"            column="created_at"/>
+        <result property="updatedAt"            column="updated_at"/>
+    </resultMap>
+
+    <!-- vše kromě source_pdf a draft_payload (těžké sloupce) -->
+    <sql id="headerColumns">
+        gr.id, gr.supplier_id, gr.supplier_name_snapshot, gr.invoice_number,
+        gr.order_number, gr.original_order_number,
+        gr.issue_date, gr.due_date, gr.taxable_supply_date,
+        gr.subtotal, gr.vat_amount, gr.total_amount, gr.currency,
+        gr.document_type, gr.source_channel, gr.status, gr.reconciliation_ok,
+        gr.extraction_model, gr.source_filename,
+        gr.confirmed_at, gr.confirmed_by, gr.rejected_at, gr.rejected_by, gr.rejection_note,
+        gr.cancelled_at, gr.cancelled_by, gr.cancellation_note,
+        gr.created_by, gr.created_at, gr.updated_at
+    </sql>
+
+    <sql id="searchWhere">
+        <where>
+            <if test="params.status != null">
+                gr.status = #{params.status, typeHandler=cz.palo.autoservis.config.mybatis.PgEnumTypeHandler$ReceiptStatusHandler}
+            </if>
+            <if test="params.documentType != null">
+                AND gr.document_type = #{params.documentType, typeHandler=cz.palo.autoservis.config.mybatis.PgEnumTypeHandler$DocumentTypeHandler}
+            </if>
+            <if test="params.dateFrom != null">
+                AND gr.issue_date &gt;= #{params.dateFrom}
+            </if>
+            <if test="params.dateTo != null">
+                AND gr.issue_date &lt;= #{params.dateTo}
+            </if>
+            <if test="params.search != null and params.search != ''">
+                <bind name="searchLike" value="'%' + params.search + '%'"/>
+                AND (
+                    LOWER(gr.invoice_number) LIKE LOWER(#{searchLike})
+                    OR LOWER(gr.supplier_name_snapshot) LIKE LOWER(#{searchLike})
+                )
+            </if>
+        </where>
+    </sql>
+
+    <select id="search" resultMap="ReceiptResultMap">
+        SELECT <include refid="headerColumns"/>
+        FROM warehouse.goods_receipts gr
+        <include refid="searchWhere"/>
+        ORDER BY <include refid="receiptSortOrder"/>
+        LIMIT #{params.pageSize} OFFSET #{params.offset}
+    </select>
+
+    <!--
+        Whitelist seřaditelných sloupců (TD-46, U3R.2). Výchozí klíč `createdAt`
+        sestupně (naposledy importované doklady první) nastavuje ReceiptSearchParams.
+
+        `status` se řadí podle pořadí ve workflow, ne abecedně: čeká na kontrolu →
+        potvrzeno → zamítnuto → stornováno.
+
+        Sloupec „Kontroly" seřadit nejde — `reconciliationOk` je odvozený příznak
+        z výsledků kontrol v draftu, ne sloupec v tabulce.
+    -->
+    <sql id="receiptSortOrder">
+        <choose>
+            <when test="params.sortBy == 'documentNumber'">
+                gr.invoice_number <if test="params.sortDesc">DESC</if> NULLS LAST, gr.id <if test="params.sortDesc">DESC</if>
+            </when>
+            <when test="params.sortBy == 'supplierName'">
+                gr.supplier_name_snapshot <if test="params.sortDesc">DESC</if> NULLS LAST, gr.id <if test="params.sortDesc">DESC</if>
+            </when>
+            <when test="params.sortBy == 'issueDate'">
+                gr.issue_date <if test="params.sortDesc">DESC</if> NULLS LAST, gr.id <if test="params.sortDesc">DESC</if>
+            </when>
+            <when test="params.sortBy == 'totalAmount'">
+                gr.total_amount <if test="params.sortDesc">DESC</if> NULLS LAST, gr.id <if test="params.sortDesc">DESC</if>
+            </when>
+            <when test="params.sortBy == 'documentType'">
+                gr.document_type::text <if test="params.sortDesc">DESC</if>, gr.id <if test="params.sortDesc">DESC</if>
+            </when>
+            <when test="params.sortBy == 'status'">
+                ARRAY_POSITION(
+                    ARRAY['PENDING_REVIEW','CONFIRMED','REJECTED','CANCELLED']::text[],
+                    gr.status::text) <if test="params.sortDesc">DESC</if>, gr.id <if test="params.sortDesc">DESC</if>
+            </when>
+            <otherwise>
+                gr.created_at <if test="params.sortDesc">DESC</if>, gr.id <if test="params.sortDesc">DESC</if>
+            </otherwise>
+        </choose>
+    </sql>
+
+    <select id="countSearch" resultType="java.lang.Long">
+        SELECT COUNT(*)
+        FROM warehouse.goods_receipts gr
+        <include refid="searchWhere"/>
+    </select>
+
+    <select id="findById" resultMap="ReceiptResultMap">
+        SELECT <include refid="headerColumns"/>,
+               gr.draft_payload::text AS draft_payload
+        FROM warehouse.goods_receipts gr
+        WHERE gr.id = #{id}
+    </select>
+
+    <select id="findPdfById" resultMap="ReceiptResultMap">
+        SELECT gr.id, gr.source_filename, gr.source_pdf
+        FROM warehouse.goods_receipts gr
+        WHERE gr.id = #{id}
+        AND gr.source_pdf IS NOT NULL
+    </select>
+
+    <select id="hasPdf" resultType="boolean">
+        SELECT EXISTS(
+        SELECT 1 FROM warehouse.goods_receipts gr
+        WHERE gr.id = #{id} AND gr.source_pdf IS NOT NULL
+        )
+    </select>
+
+    <!-- Uložení editovaného draftu + sync hlavičkové projekce. Jen PENDING_REVIEW. -->
+    <update id="updateDraft">
+        UPDATE warehouse.goods_receipts
+        SET draft_payload          = CAST(#{draftPayload} AS jsonb),
+            invoice_number         = #{documentNumber},
+            order_number           = #{orderNumber},
+            original_order_number  = #{originalOrderNumber},
+            issue_date             = #{issueDate},
+            due_date               = #{dueDate},
+            taxable_supply_date    = #{taxableSupplyDate},
+            subtotal               = #{subtotal},
+            vat_amount             = #{vatAmount},
+            total_amount           = #{totalAmount},
+            currency               = #{currency},
+            supplier_id            = #{supplierId},
+            supplier_name_snapshot = #{supplierNameSnapshot},
+            reconciliation_ok      = #{reconciliationOk}
+        WHERE id = #{id}
+        AND status = 'PENDING_REVIEW'
+    </update>
+
+    <!-- Potvrzení: finální dodavatel + zmrazený draft + audit. Jen PENDING_REVIEW. -->
+    <update id="confirm">
+        UPDATE warehouse.goods_receipts
+        SET status                 = 'CONFIRMED',
+            supplier_id            = #{supplierId},
+            supplier_name_snapshot = #{supplierNameSnapshot},
+            draft_payload          = CAST(#{draftPayload} AS jsonb),
+            reconciliation_ok      = #{reconciliationOk},
+            confirmed_at           = NOW(),
+            confirmed_by           = #{userId}
+        WHERE id = #{id}
+        AND status = 'PENDING_REVIEW'
+    </update>
+
+    <!-- Zamítnutí: nic se nematerializovalo, číslo dokladu se uvolní (partial index V39). -->
+    <update id="reject">
+        UPDATE warehouse.goods_receipts
+        SET status         = 'REJECTED',
+            rejected_at    = NOW(),
+            rejected_by    = #{userId},
+            rejection_note = #{note}
+        WHERE id = #{id}
+        AND status = 'PENDING_REVIEW'
+    </update>
+
+    <!-- ===================== STORNO (V43, R-C) ===================== -->
+
+    <!--
+        Šarže příjemky se zámkem: storno smí projít jen u nečerpané příjemky,
+        a mezi kontrolou a zápisem kompenzací nesmí nikdo vydat (vzor K6).
+        Jednoduchý single-table SELECT, aby FOR UPDATE platilo čistě.
+    -->
+    <select id="findBatchesForUpdate"
+            resultType="cz.palo.autoservis.model.domain.warehouse.GoodsReceiptItem">
+        SELECT
+            gri.id                  AS id,
+            gri.goods_receipt_id    AS goodsReceiptId,
+            gri.product_id          AS productId,
+            gri.position            AS position,
+            gri.name_snapshot       AS nameSnapshot,
+            gri.quantity_received   AS quantityReceived,
+            gri.quantity_remaining  AS quantityRemaining,
+            gri.unit_price_excl_vat AS unitPriceExclVat,
+            gri.vat_rate            AS vatRate,
+            gri.total_incl_vat      AS totalInclVat
+        FROM warehouse.goods_receipt_items gri
+        WHERE gri.goods_receipt_id = #{receiptId}
+        ORDER BY gri.position
+        FOR UPDATE
+    </select>
+
+    <!--
+        Šarže příjemky, na které se váže položka zakázky. Samotné
+        quantity_remaining = quantity_received nestačí: vydané a zase vrácené
+        zboží (ISSUE + ISSUE_RETURN) má zůstatek zpět, ale FK z order_items trvá
+        a ON DELETE RESTRICT by storno stejně neprošlo.
+    -->
+    <select id="findBatchIdsUsedByOrderItems" resultType="java.lang.Long">
+        SELECT DISTINCT oi.goods_receipt_item_id
+        FROM "order".order_items oi
+        JOIN warehouse.goods_receipt_items gri ON gri.id = oi.goods_receipt_item_id
+        WHERE gri.goods_receipt_id = #{receiptId}
+    </select>
+
+    <!-- Guarded přechod: stornovat lze jen potvrzenou příjemku (druhý pokus = 0 řádků). -->
+    <update id="cancel">
+        UPDATE warehouse.goods_receipts
+        SET status            = 'CANCELLED',
+            cancelled_at      = NOW(),
+            cancelled_by      = #{userId},
+            cancellation_note = #{note}
+        WHERE id = #{id}
+        AND status = 'CONFIRMED'
+    </update>
+
+</mapper>

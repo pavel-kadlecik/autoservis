@@ -1,0 +1,95 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+
+<!--
+    MileageHistoryMapper.xml — SQL pro cz.palo.autoservis.mapper.MileageHistoryMapper
+    Tabulka: vehicle.mileage_history (vždy plně kvalifikovaná).
+    Editovatelný deník; cache current_mileage_km udržuje DB trigger
+    (trg_mileage_history_sync_current) na INSERT/UPDATE/DELETE.
+    The 'source' ENUM column needs no jdbcType=OTHER here: MileageSource has a
+    dedicated PgEnumTypeHandler (MileageSourceHandler), applied automatically by type.
+-->
+<mapper namespace="cz.palo.autoservis.mapper.MileageHistoryMapper">
+
+    <!-- =========================================================
+         Result map / reusable columns
+         ========================================================= -->
+
+    <resultMap id="MileageHistoryResultMap" type="cz.palo.autoservis.model.domain.vehicle.MileageHistory">
+        <id     property="id"           column="id"/>
+        <result property="vehicleId"    column="vehicle_id"/>
+        <result property="mileageKm"    column="mileage_km"/>
+        <result property="recordedDate" column="recorded_date"/>
+        <result property="source"       column="source"/>
+        <result property="note"         column="note"/>
+        <result property="orderId"      column="order_id"/>
+        <result property="createdAt"    column="created_at"/>
+        <result property="createdBy"    column="created_by"/>
+    </resultMap>
+
+    <sql id="mileageColumns">
+        m.id, m.vehicle_id, m.mileage_km, m.recorded_date,
+        m.source, m.note, m.order_id, m.created_at, m.created_by
+    </sql>
+
+    <!-- =========================================================
+         Insert
+         ========================================================= -->
+
+    <insert id="insert"
+            parameterType="cz.palo.autoservis.model.domain.vehicle.MileageHistory"
+            useGeneratedKeys="true" keyProperty="id" keyColumn="id">
+        INSERT INTO vehicle.mileage_history (
+            vehicle_id, mileage_km, recorded_date, source, note, order_id, created_by
+        ) VALUES (
+            #{vehicleId},
+            #{mileageKm},
+            #{recordedDate},
+            #{source},
+            #{note},
+            #{orderId},
+            #{createdBy}
+        )
+    </insert>
+
+    <!-- =========================================================
+         Select
+         ========================================================= -->
+
+    <select id="findById" resultMap="MileageHistoryResultMap">
+        SELECT <include refid="mileageColumns"/>
+        FROM vehicle.mileage_history m
+        WHERE m.id = #{id}
+    </select>
+
+    <select id="findByVehicleId" resultMap="MileageHistoryResultMap">
+        SELECT <include refid="mileageColumns"/>
+        FROM vehicle.mileage_history m
+        WHERE m.vehicle_id = #{vehicleId}
+        ORDER BY m.recorded_date DESC, m.id DESC
+    </select>
+
+    <!-- =========================================================
+         Update / Delete
+         ========================================================= -->
+
+    <!-- vehicle_id, created_at a created_by jsou neměnné. -->
+    <update id="update" parameterType="cz.palo.autoservis.model.domain.vehicle.MileageHistory">
+        UPDATE vehicle.mileage_history
+        SET mileage_km    = #{mileageKm},
+            recorded_date = #{recordedDate},
+            source        = #{source},
+            note          = #{note}
+        WHERE id = #{id}
+    </update>
+
+    <delete id="delete">
+        DELETE FROM vehicle.mileage_history WHERE id = #{id}
+    </delete>
+
+    <select id="existsByVehicleId" resultType="boolean">
+        SELECT EXISTS(SELECT 1 FROM vehicle.mileage_history WHERE vehicle_id = #{vehicleId})
+    </select>
+
+</mapper>

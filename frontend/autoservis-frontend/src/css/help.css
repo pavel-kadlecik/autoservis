@@ -1,0 +1,91 @@
+/* Typografie článků nápovědy (U7.1).
+ *
+ * Proč vůbec existuje: `reset.css` maže marginy nadpisům, odstavcům i seznamům,
+ * protože v aplikaci si odstupy řeší komponenty samy. Nápověda ale žádné
+ * komponenty nemá — je to markdown vykreslený `react-markdown` — takže článek
+ * byl jeden slitý blok, kde se nadpis dotýkal textu nad i pod sebou.
+ *
+ * Platí **jen uvnitř `.help-article`**, aby se rytmus textu nevlil do zbytku
+ * aplikace, kde marginy patří komponentám.
+ */
+
+.help-article {
+    max-width: 68ch;              /* delší řádek se špatně čte — oko ztrácí začátek dalšího */
+    font-size: 1rem;
+    line-height: 1.65;
+    color: var(--bs-body-color);
+}
+
+/* Nadpisy: velký odstup nahoře, malý dole — text patří ke svému nadpisu,
+   ne k tomu předchozímu. */
+/* Vzhled řídí třída, ne úroveň značky — `HelpPage` nadpisy posouvá o úroveň níž,
+   aby stránka měla jediný `h1` (ten je v `PageHeader`). */
+.help-article .help-h1 { font-size: 1.75rem; line-height: 1.25; margin: 0 0 1rem; }
+.help-article .help-h2 { font-size: 1.35rem; line-height: 1.3;  margin: 2.25rem 0 .75rem;
+                         padding-bottom: .35rem; border-bottom: 1px solid var(--bs-border-color); }
+.help-article .help-h3 { font-size: 1.1rem;  line-height: 1.35; margin: 1.75rem 0 .5rem; }
+.help-article > *:first-child { margin-top: 0; }
+
+.help-article p  { margin: 0 0 1rem; }
+.help-article ul,
+.help-article ol { margin: 0 0 1rem; padding-left: 1.5rem; }
+.help-article li { margin-bottom: .35rem; }
+.help-article li > ul,
+.help-article li > ol { margin: .35rem 0 .5rem; }
+
+.help-article strong { font-weight: 600; }
+.help-article code   { background: var(--bs-secondary-bg); padding: .1em .35em;
+                       border-radius: 4px; font-size: .9em; }
+.help-article blockquote { margin: 0 0 1rem; padding: .75rem 1rem;
+                           border-left: 3px solid var(--bs-primary);
+                           background: var(--bs-secondary-bg); border-radius: 0 6px 6px 0; }
+.help-article hr { margin: 2rem 0; }
+.help-article a  { text-decoration: underline; text-underline-offset: 2px; }
+
+/* Seznam článků má u dlouhého textu zůstat na očích. Jen od `md` výš —
+   na úzkém okně je nad článkem a lepit ho k hornímu okraji by ukrojilo
+   z výšky, kterou potřebuje samotný text. */
+@media (min-width: 768px) {
+    .help-nav {
+        position: sticky;
+        top: 1.5rem;
+    }
+}
+
+/* Tabulky (GFM, U7.2). Vzhled sedí k `.table` z Bootstrapu, ale záměrně se
+   nedědí — článek je markdown, ne JSX, takže třídy do něj dát nejde. */
+.help-table {
+    overflow-x: auto;       /* široká tabulka scrolluje uvnitř, neroztáhne stránku */
+    margin: 0 0 1rem;
+}
+
+.help-article table {
+    width: 100%;
+    margin: 0;
+    border-collapse: collapse;
+    font-size: .95rem;
+}
+
+.help-article th,
+.help-article td {
+    padding: .5rem .75rem;
+    border-bottom: 1px solid var(--bs-border-color);
+    text-align: left;
+    vertical-align: top;
+}
+
+.help-article thead th {
+    border-bottom-width: 2px;
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+.help-article tbody tr:last-child td { border-bottom: 0; }
+
+/* Zarovnání zprava přes `---:` v GFM musí přebít výchozí `text-align: left`. */
+.help-article th[align="right"],
+.help-article td[align="right"]  { text-align: right; }
+.help-article th[align="center"],
+.help-article td[align="center"] { text-align: center; }
+
+.help-article del { color: var(--bs-secondary-color); }

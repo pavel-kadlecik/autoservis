@@ -1,0 +1,136 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+
+<!--
+    EmployeeMapper.xml — SQL pro cz.palo.autoservis.mapper.EmployeeMapper
+    Tabulka: employee.employees (vždy plně kvalifikovaná dle konvence projektu, R-02).
+    Žádné ENUM sloupce; user_id je nullable mezischémová FK na security.users.
+-->
+<mapper namespace="cz.palo.autoservis.mapper.EmployeeMapper">
+
+    <!-- =========================================================
+         Result map
+         ========================================================= -->
+
+    <resultMap id="EmployeeResultMap" type="cz.palo.autoservis.model.domain.employee.Employee">
+        <id     property="id"          column="id"/>
+        <result property="userId"      column="user_id"/>
+        <result property="firstName"   column="first_name"/>
+        <result property="lastName"    column="last_name"/>
+        <result property="position"    column="position"/>
+        <result property="hourlyRate"  column="hourly_rate"/>
+        <result property="hiredAt"     column="hired_at"/>
+        <result property="leftAt"      column="left_at"/>
+        <result property="active"      column="is_active"/>
+        <result property="createdAt"   column="created_at"/>
+        <result property="updatedAt"   column="updated_at"/>
+        <result property="createdBy"   column="created_by"/>
+    </resultMap>
+
+    <sql id="employeeColumns">
+        e.id, e.user_id, e.first_name, e.last_name, e.position,
+        e.hourly_rate, e.hired_at, e.left_at, e.is_active,
+        e.created_at, e.updated_at, e.created_by
+    </sql>
+
+    <!-- =========================================================
+         Insert
+         ========================================================= -->
+
+    <insert id="insert"
+            parameterType="cz.palo.autoservis.model.domain.employee.Employee"
+            useGeneratedKeys="true" keyProperty="id" keyColumn="id">
+        INSERT INTO employee.employees (
+            user_id, first_name, last_name, position,
+            hourly_rate, hired_at, left_at, is_active, created_by
+        ) VALUES (
+            #{userId},
+            #{firstName},
+            #{lastName},
+            #{position},
+            #{hourlyRate},
+            #{hiredAt},
+            #{leftAt},
+            COALESCE(#{active}, TRUE),
+            #{createdBy}
+        )
+    </insert>
+
+    <!-- =========================================================
+         Select — single result
+         ========================================================= -->
+
+    <!-- PŘÍSNÉ (R-10): getById() vrací 404 pro neaktivního zaměstnance.
+         Čtení po mutaci jde přes findByIdIncludingInactive (fetchOrFail). -->
+    <select id="findById" resultMap="EmployeeResultMap">
+        SELECT <include refid="employeeColumns"/>
+        FROM employee.employees e
+        WHERE e.id = #{id} AND e.is_active = TRUE
+    </select>
+
+    <select id="findByIdIncludingInactive" resultMap="EmployeeResultMap">
+        SELECT <include refid="employeeColumns"/>
+        FROM employee.employees e
+        WHERE e.id = #{id}
+    </select>
+
+    <!-- =========================================================
+         Select — list (management + LABOR item select)
+         ========================================================= -->
+
+    <select id="findAll" resultMap="EmployeeResultMap">
+        SELECT <include refid="employeeColumns"/>
+        FROM employee.employees e
+        <where>
+            <if test="activeOnly">
+                e.is_active = TRUE
+            </if>
+        </where>
+        ORDER BY e.last_name, e.first_name, e.id
+    </select>
+
+    <!-- =========================================================
+         Update / Soft delete / Reactivate
+         ========================================================= -->
+
+    <!-- created_at a created_by jsou neměnné. updated_at udržuje DB trigger. -->
+    <update id="update" parameterType="cz.palo.autoservis.model.domain.employee.Employee">
+        UPDATE employee.employees
+        SET user_id     = #{userId},
+            first_name  = #{firstName},
+            last_name   = #{lastName},
+            position    = #{position},
+            hourly_rate = #{hourlyRate},
+            hired_at    = #{hiredAt},
+            left_at     = #{leftAt}
+        WHERE id = #{id}
+    </update>
+
+    <update id="deactivate">
+        UPDATE employee.employees
+        SET is_active = FALSE
+        WHERE id = #{id}
+    </update>
+
+    <update id="activate">
+        UPDATE employee.employees
+        SET is_active = TRUE
+        WHERE id = #{id}
+    </update>
+
+    <!-- =========================================================
+         Existence checks
+         ========================================================= -->
+
+    <select id="existsByUserId" resultType="boolean">
+        SELECT EXISTS(
+            SELECT 1 FROM employee.employees
+            WHERE user_id = #{userId}
+            <if test="excludeId != null">
+                AND id &lt;&gt; #{excludeId}
+            </if>
+        )
+    </select>
+
+</mapper>

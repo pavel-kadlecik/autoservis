@@ -1,0 +1,535 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+
+<!--
+    InvoiceMapper.xml — SQL pro cz.palo.autoservis.mapper.InvoiceMapper
+    Tabulka: billing.invoices (vždy plně kvalifikovaná dle konvence projektu)
+    View:    billing.v_invoice_price_totals (spočítané součty, viz V32)
+-->
+<mapper namespace="cz.palo.autoservis.mapper.InvoiceMapper">
+
+    <!-- =========================================================
+         Result mapy
+         ========================================================= -->
+
+    <resultMap id="InvoiceResultMap" type="cz.palo.autoservis.model.domain.billing.Invoice">
+        <id     property="id"                       column="id"/>
+        <result property="invoiceNumber"            column="invoice_number"/>
+        <result property="orderId"                  column="order_id"/>
+        <result property="customerId"               column="customer_id"/>
+        <result property="issueDate"                column="issue_date"/>
+        <result property="dueDate"                  column="due_date"/>
+        <result property="taxableSupplyDate"        column="taxable_supply_date"/>
+        <result property="variableSymbol"           column="variable_symbol"/>
+        <result property="constantSymbol"           column="constant_symbol"/>
+        <result property="specificSymbol"           column="specific_symbol"/>
+        <result property="paymentMethod"            column="payment_method"/>
+        <result property="status"                   column="status"/>
+        <result property="note"                     column="note"/>
+        <result property="purchaseOrderNumber"      column="purchase_order_number"/>
+        <result property="createdAt"                column="created_at"/>
+        <result property="updatedAt"                column="updated_at"/>
+        <result property="createdBy"                column="created_by"/>
+        <result property="customerNameSnapshot"     column="customer_name_snapshot"/>
+        <result property="orderNumberSnapshot"      column="order_number_snapshot"/>
+        <result property="vehicleLicensePlateSnapshot" column="vehicle_license_plate_snapshot"/>
+        <result property="vehicleVinSnapshot"        column="vehicle_vin_snapshot"/>
+        <result property="vehicleBrandSnapshot"      column="vehicle_brand_snapshot"/>
+        <result property="vehicleModelSnapshot"      column="vehicle_model_snapshot"/>
+        <result property="paidAt"                    column="paid_at"/>
+        <result property="paidAmount"                column="paid_amount"/>
+        <result property="paidMethod"                column="paid_method"
+                typeHandler="cz.palo.autoservis.config.mybatis.PgEnumTypeHandler$PaymentMethodHandler"/>
+        <result property="creditedAt"                column="credited_at"/>
+        <result property="handedOverAt"              column="handed_over_at"/>
+        <result property="handedOverBy"              column="handed_over_by"/>
+    </resultMap>
+
+    <!-- Read model seznamu — hlavička faktury + JOIN projekce + součty z view. -->
+    <resultMap id="InvoiceListRowResultMap" type="cz.palo.autoservis.model.domain.billing.InvoiceListRow">
+        <id     property="id"                  column="id"/>
+        <result property="invoiceNumber"       column="invoice_number"/>
+        <result property="issueDate"           column="issue_date"/>
+        <result property="dueDate"             column="due_date"/>
+        <result property="status"              column="status"/>
+        <result property="paymentMethod"       column="payment_method"/>
+        <result property="variableSymbol"      column="variable_symbol"/>
+        <result property="orderId"             column="order_id"/>
+        <result property="orderNumber"         column="order_number"/>
+        <result property="customerId"          column="customer_id"/>
+        <result property="customerDisplayName" column="customer_display_name"/>
+        <result property="totalNet"            column="total_net"/>
+        <result property="totalVat"            column="total_vat"/>
+        <result property="totalGross"          column="total_gross"/>
+        <result property="totalToPay"          column="total_to_pay"/>
+        <result property="creditedAt"          column="credited_at"/>
+        <result property="handedOverAt"        column="handed_over_at"/>
+        <result property="handedOverBy"        column="handed_over_by"/>
+        <result property="hasDraftCreditNote" column="has_draft_credit_note"/>
+        <result property="orderDescription"   column="order_description"/>
+    </resultMap>
+
+    <!-- Spočítané součty z view billing.v_invoice_price_totals. -->
+    <resultMap id="InvoiceSummaryResultMap" type="cz.palo.autoservis.model.domain.billing.InvoiceSummary">
+        <id     property="invoiceId"  column="invoice_id"/>
+        <result property="totalNet"   column="total_net"/>
+        <result property="totalVat"   column="total_vat"/>
+        <result property="totalGross" column="total_gross"/>
+        <!-- V67/KN-7: zaokrouhlení hotovosti mimo základ daně (§36/5) -->
+        <result property="rounding"   column="rounding"/>
+        <result property="totalToPay" column="total_to_pay"/>
+    </resultMap>
+
+    <!-- Rekapitulace DPH po sazbách z view billing.v_invoice_vat_summary. -->
+    <resultMap id="InvoiceVatSummaryResultMap" type="cz.palo.autoservis.model.domain.billing.InvoiceVatSummary">
+        <result property="invoiceId" column="invoice_id"/>
+        <result property="vatRate"   column="vat_rate"/>
+        <result property="base"      column="base"/>
+        <result property="vat"       column="vat"/>
+        <result property="total"     column="total"/>
+    </resultMap>
+
+    <!-- =========================================================
+         Znovupoužitelné SQL fragmenty
+         ========================================================= -->
+
+    <sql id="invoiceColumns">
+        i.id, i.invoice_number, i.order_id, i.customer_id,
+        i.issue_date, i.due_date, i.taxable_supply_date,
+        i.variable_symbol, i.constant_symbol, i.specific_symbol,
+        i.payment_method, i.status, i.note, i.purchase_order_number,
+        i.customer_name_snapshot, i.order_number_snapshot,
+        i.vehicle_license_plate_snapshot,
+        i.vehicle_vin_snapshot, i.vehicle_brand_snapshot, i.vehicle_model_snapshot,
+        i.paid_at, i.paid_amount, i.paid_method, i.credited_at,
+        i.handed_over_at, i.handed_over_by,
+        i.created_at, i.updated_at, i.created_by
+    </sql>
+
+    <!--
+        JOINy sdílené search a countSearch — musí být v obou identické,
+        jinak by počet řádků neodpovídal vrácené stránce.
+        K vozidlu se jde přes zakázku (faktura vehicle_id nemá).
+    -->
+    <sql id="searchJoins">
+        FROM billing.invoices AS i
+        LEFT JOIN "order".orders     AS o ON o.id = i.order_id
+        LEFT JOIN customer.customers AS c ON c.id = i.customer_id
+        LEFT JOIN vehicle.vehicles   AS v ON v.id = o.vehicle_id
+    </sql>
+
+    <!-- Dynamická WHERE klauzule sdílená search a countSearch. -->
+    <sql id="searchWhere">
+        <where>
+            <if test="params.search != null and params.search != ''">
+                <bind name="searchLike" value="'%' + params.search + '%'"/>
+                AND (
+                    LOWER(i.invoice_number)   LIKE LOWER(#{searchLike})
+                    OR LOWER(o.order_number)  LIKE LOWER(#{searchLike})
+                    OR LOWER(c.first_name)    LIKE LOWER(#{searchLike})
+                    OR LOWER(c.last_name)     LIKE LOWER(#{searchLike})
+                    OR LOWER(c.company_name)  LIKE LOWER(#{searchLike})
+                    OR LOWER(v.vin)           LIKE LOWER(#{searchLike})
+                    OR LOWER(v.license_plate) LIKE LOWER(#{searchLike})
+                )
+            </if>
+            <if test="params.status != null">
+                AND i.status = #{params.status, typeHandler=cz.palo.autoservis.config.mybatis.PgEnumTypeHandler$InvoiceStatusHandler}
+            </if>
+            <if test="params.issueDateFrom != null">
+                AND i.issue_date &gt;= #{params.issueDateFrom}
+            </if>
+            <if test="params.issueDateTo != null">
+                AND i.issue_date &lt;= #{params.issueDateTo}
+            </if>
+            <if test="params.overdue != null and params.overdue">
+                AND i.status = 'ISSUED'::billing.invoice_status
+                AND i.due_date &lt; CURRENT_DATE
+            </if>
+        </where>
+    </sql>
+
+    <!-- =========================================================
+         Insert
+         ========================================================= -->
+
+    <!-- invoice_number a variable_symbol vkládá od V71 aplikace (vznikají při založení
+         konceptu: návrh dle masky / ruční zápis; VS vyplňuje uživatel). Unikátnost čísla
+         jistí uq_invoice_number — service překládá porušení na DUPLICATE_INVOICE_NUMBER. -->
+    <insert id="insert"
+            parameterType="cz.palo.autoservis.model.domain.billing.Invoice"
+            useGeneratedKeys="true" keyProperty="id" keyColumn="id">
+        INSERT INTO billing.invoices (
+            invoice_number, variable_symbol,
+            order_id, customer_id, issue_date, due_date, taxable_supply_date,
+            constant_symbol, specific_symbol, payment_method, note, purchase_order_number, created_by,
+            customer_name_snapshot, order_number_snapshot, vehicle_license_plate_snapshot,
+            vehicle_vin_snapshot, vehicle_brand_snapshot, vehicle_model_snapshot
+        ) VALUES (
+            #{invoiceNumber}, #{variableSymbol},
+            #{orderId}, #{customerId}, #{issueDate}, #{dueDate}, #{taxableSupplyDate},
+            #{constantSymbol}, #{specificSymbol},
+            #{paymentMethod, typeHandler=cz.palo.autoservis.config.mybatis.PgEnumTypeHandler$PaymentMethodHandler},
+            #{note}, #{purchaseOrderNumber}, #{createdBy}, #{customerNameSnapshot}, #{orderNumberSnapshot}, #{vehicleLicensePlateSnapshot},
+            #{vehicleVinSnapshot}, #{vehicleBrandSnapshot}, #{vehicleModelSnapshot}
+        )
+    </insert>
+
+    <!-- Nejvyšší pořadí v řadě dané maskou (V71): regex má období (rok/měsíc) zapečené
+         jako konkrétní číslice a pořadové číslo jako jedinou zachytávací skupinu
+         (max. 15 číslic — ::BIGINT nemůže přetéct). Čísla mimo masku se nematchnou,
+         řadu tedy neovlivní. -->
+    <!-- Čísla téže řady a období — podklad pro hlídání mezer (V89). -->
+    <!--
+        Běží k faktuře rozpracovaná oprava? Koncept dobropisu nemá číslo a nic neopravuje,
+        takže `credited_at` nenastavuje — do 2026-08-08 byl proto na faktuře úplně neviditelný,
+        přestože blokuje založení druhé opravy i fakturaci zakázky. Korelováno na `i`.
+    -->
+    <sql id="hasDraftCreditNote">
+        EXISTS (SELECT 1 FROM billing.credit_notes cn
+                 WHERE cn.original_invoice_id = i.id
+                   AND cn.status = 'DRAFT'::billing.invoice_status)
+    </sql>
+
+    <select id="findNumbersByRegex" resultType="java.lang.String">
+        SELECT invoice_number
+        FROM billing.invoices
+        WHERE invoice_number ~ #{regex}
+    </select>
+
+    <select id="findMaxSequence" resultType="java.lang.Long">
+        SELECT MAX((regexp_match(invoice_number, #{regex}))[1]::BIGINT)
+        FROM billing.invoices
+        WHERE invoice_number ~ #{regex}
+    </select>
+
+    <!-- =========================================================
+         Update
+         ========================================================= -->
+
+    <!-- Mění se jen měnitelná pole; invoice_number, order_id a customer_id jsou neměnné. -->
+    <!-- Full-replace (sladěno s ostatními moduly, TD-54/E1.1): nullable symboly a note lze vymazat.
+         status je NOT NULL; stavový automat hlídá service (TD-49: originalStatus se zapisuje zpět
+         před update, takže PUT stav neobejde). due_date je NOT NULL (validace v DTO). -->
+    <update id="update" parameterType="cz.palo.autoservis.model.domain.billing.Invoice">
+        UPDATE billing.invoices
+        SET due_date        = COALESCE(#{dueDate}, due_date),
+            constant_symbol = #{constantSymbol},
+            specific_symbol = #{specificSymbol},
+            payment_method  = COALESCE(#{paymentMethod, typeHandler=cz.palo.autoservis.config.mybatis.PgEnumTypeHandler$PaymentMethodHandler}::billing.payment_method, payment_method),
+            status          = COALESCE(#{status, typeHandler=cz.palo.autoservis.config.mybatis.PgEnumTypeHandler$InvoiceStatusHandler}::billing.invoice_status, status),
+            note            = #{note},
+            purchase_order_number = #{purchaseOrderNumber}
+        WHERE id = #{id}
+          <!-- Guarded write (TD-58/S-4, vzor K5): hlavičku lze editovat jen v DRAFT.
+               Souběžný issue() → 0 řádků → service vrátí 409 místo mutace vystaveného dokladu. -->
+          AND status = 'DRAFT'::billing.invoice_status
+    </update>
+
+    <!--
+        Update samotného stavu pro hlídané přechodové operace.
+        Hlídá se očekávaným aktuálním stavem, aby při souběhu dvou requestů mezi
+        kontrolou přechodu ve službě a tímto zápisem nevznikl lost update
+        (TOCTOU) — 0 dotčených řádků signalizuje volajícímu souběžnou změnu.
+    -->
+    <update id="updateStatus">
+        UPDATE billing.invoices
+        SET status = #{status, typeHandler=cz.palo.autoservis.config.mybatis.PgEnumTypeHandler$InvoiceStatusHandler}
+        WHERE id = #{id}
+          AND status = #{expectedStatus, typeHandler=cz.palo.autoservis.config.mybatis.PgEnumTypeHandler$InvoiceStatusHandler}
+    </update>
+
+    <!--
+      Vystavení faktury: zápis čísla, VS a dat + přechod DRAFT→ISSUED v JEDNOM UPDATE.
+      Číslo dostává doklad až tady — koncept ho nemá, takže zrušený koncept nemůže spálit
+      číslo řady. Jeden příkaz kvůli guardu WHERE status = 'DRAFT' (TOCTOU): číslo se
+      nezapíše do dokladu, který mezitím vystavil někdo jiný.
+
+      Datum vystavení posílá service z requestu (volba obsluhy v dialogu, rozhodnutí
+      uživatele 2026-08-07) — dřív to bylo razítko dneškem (audit KN-10). Splatnost jde
+      s ním, protože zvolené datum vystavení může starý koncept dostat za jeho splatnost
+      (CHECK `chk_due_date`) — service ji v takovém případě posune o původní lhůtu.
+    -->
+    <update id="issueWithNumber">
+        UPDATE billing.invoices
+        SET status          = 'ISSUED'::billing.invoice_status,
+            issue_date      = #{issueDate},
+            due_date        = #{dueDate},
+            invoice_number  = #{invoiceNumber},
+            variable_symbol = #{variableSymbol}
+        WHERE id = #{id}
+          AND status = 'DRAFT'::billing.invoice_status
+    </update>
+
+    <!--
+      Poradní zámek nad jednou řadou a obdobím; drží se do konce transakce (viz mapper).
+      `pg_advisory_xact_lock` vrací typ `void`, ale MyBatis pro <select> potřebuje něco
+      namapovat — proto `IS NOT NULL` (vždy TRUE). Návratová hodnota se zahazuje, smyslem
+      příkazu je jen vzít zámek.
+    -->
+    <select id="lockNumberSeries" resultType="java.lang.Boolean">
+        SELECT pg_advisory_xact_lock(hashtext(#{key})) IS NOT NULL
+    </select>
+
+    <!--
+        Smazání KONCEPTU faktury — jediné tvrdé DELETE v modulu (výjimka z R-06, viz mapper).
+        Položky a strany odejdou s ním přes FK ON DELETE CASCADE; dobropis ani pokladní doklad
+        ke konceptu vzniknout nemůže (guardy INVOICE_NOT_CORRECTABLE / INVOICE_NOT_ISSUED),
+        takže osiřelý odkaz nehrozí. Guard WHERE status='DRAFT' chrání vystavený doklad
+        i při souběhu — 0 řádků → 409.
+    -->
+    <!--
+        Smazat lze koncept vždy a **vystavenou fakturu, dokud ji zákazník nedostal** (V88).
+        Podmínky jsou v SQL, ne jen ve službě: guarded write (vzor K5) — 0 řádků znamená,
+        že mezitím někdo doklad předal nebo zaplatil, a volající z toho udělá 409 místo
+        tichého nic. Zaplacená faktura je blokovaná i bez příznaku předání: kdo platí,
+        doklad má.
+    -->
+    <delete id="deleteDeletable">
+        DELETE FROM billing.invoices
+        WHERE id = #{id}
+          AND (
+                status = 'DRAFT'::billing.invoice_status
+             OR (status = 'ISSUED'::billing.invoice_status
+                 AND handed_over_at IS NULL
+                 AND paid_at IS NULL)
+          )
+    </delete>
+
+    <!-- Potvrzení, že doklad dostal zákazník. Jen u vystavené faktury; koncept se nepředává. -->
+    <update id="markHandedOver">
+        UPDATE billing.invoices
+        SET handed_over_at = NOW(),
+            handed_over_by = #{userId}
+        WHERE id = #{id}
+          AND status IN ('ISSUED'::billing.invoice_status, 'PAID'::billing.invoice_status)
+          AND handed_over_at IS NULL
+    </update>
+
+    <!-- Vzetí zpět — i „předáno" jde kliknout omylem. Zaplacenou fakturu už neodemkne. -->
+    <update id="clearHandedOver">
+        UPDATE billing.invoices
+        SET handed_over_at = NULL,
+            handed_over_by = NULL
+        WHERE id = #{id}
+          AND handed_over_at IS NOT NULL
+          AND paid_at IS NULL
+    </update>
+
+    <!--
+        Vrácení vystavené faktury do konceptu (2026-08-08) — typicky kvůli špatně zadanému číslu.
+
+        DVA KROKY SCHVÁLNĚ, a to v tomhle pořadí. Trigger `trg_invoices_number_immutable` (V71)
+        zakazuje změnu čísla, když `OLD.status <> 'DRAFT'` — jedním UPDATEem by tedy „zruš
+        vystavení a smaž číslo" spadlo. Nejdřív se proto zruší vystavení (číslo se nemění,
+        takže trigger nevystřelí) a teprve pak se smaže číslo (už z konceptu, kde je měnitelné).
+        Není to obcházení té zábrany, ale přesně to, co říká: **dokud je doklad vystavený,
+        číslo se nemění**.
+
+        Mezistav „koncept s číslem" projde i CHECKem `chk_invoice_issued_has_number` — ten žádá
+        číslo jen u ISSUED/PAID.
+    -->
+    <update id="revokeIssueStep1Status">
+        UPDATE billing.invoices
+        SET status = 'DRAFT'::billing.invoice_status
+        WHERE id = #{id}
+          AND status = 'ISSUED'::billing.invoice_status
+    </update>
+
+    <update id="revokeIssueStep2ClearNumber">
+        UPDATE billing.invoices
+        SET invoice_number  = NULL,
+            variable_symbol = NULL
+        WHERE id = #{id}
+          AND status = 'DRAFT'::billing.invoice_status
+    </update>
+
+    <!--
+        Vzetí platby zpět (2026-08-08): PAID → ISSUED a smazání záznamu o úhradě.
+        Guarded write (vzor K5) — `AND status = 'PAID'` znamená, že souběžná změna vrátí
+        0 řádků a volající z toho udělá 409 místo tichého nic. Číslo ani datum vystavení
+        se nedotýká: doklad vystavený být nepřestal, jen se opravuje interní evidence úhrady.
+    -->
+    <update id="clearPayment">
+        UPDATE billing.invoices
+        SET status      = 'ISSUED'::billing.invoice_status,
+            paid_at     = NULL,
+            paid_amount = NULL,
+            paid_method = NULL
+        WHERE id = #{id}
+          AND status = 'PAID'::billing.invoice_status
+    </update>
+
+    <!-- Zaznamená úhradu při přechodu na PAID (E2.1/K-9): datum (server NOW()), částka, způsob. -->
+    <update id="recordPayment">
+        UPDATE billing.invoices
+        SET paid_at     = NOW(),
+            paid_amount = #{paidAmount},
+            paid_method = #{paidMethod, typeHandler=cz.palo.autoservis.config.mybatis.PgEnumTypeHandler$PaymentMethodHandler}::billing.payment_method
+        WHERE id = #{id}
+    </update>
+
+    <!-- =========================================================
+         Select
+         ========================================================= -->
+
+    <select id="findById" resultMap="InvoiceResultMap">
+        SELECT <include refid="invoiceColumns"/>
+        FROM billing.invoices AS i
+        WHERE i.id = #{id}
+    </select>
+
+    <select id="findByInvoiceNumber" resultMap="InvoiceResultMap">
+        SELECT <include refid="invoiceColumns"/>
+        FROM billing.invoices AS i
+        WHERE i.invoice_number = #{invoiceNumber}
+    </select>
+
+    <!-- Vrací aktivní (nestornovanou) fakturu zakázky. Po V48 smí mít zakázka víc faktur
+         (stornované + jednu aktivní), proto filtr status <> CANCELLED — partial unikátní index
+         zaručuje, že aktivní je nejvýš jedna. -->
+    <!--
+        AKTIVNÍ faktura zakázky — přesně to, co pouští částečný unikát uq_invoices_order_active
+        (V48 + V69). Predikáty musí zůstat shodné: metoda vrací Optional, takže druhý řádek by
+        neznamenal špatnou odpověď, ale TooManyResultsException.
+
+        Dobropisovaná faktura tu není schválně. Zůstává platným dokladem (ISSUED/PAID), ale
+        zakázku už neblokuje — jinak by ji chybná faktura zamkla navždy (storno vystaveného
+        dokladu je od KN-1 zakázané a dobropis stav faktury nemění).
+    -->
+    <select id="findByOrderId" resultMap="InvoiceResultMap">
+        SELECT <include refid="invoiceColumns"/>
+        FROM billing.invoices AS i
+        WHERE i.order_id = #{orderId}
+          AND i.status &lt;&gt; 'CANCELLED'::billing.invoice_status
+          AND i.credited_at IS NULL
+    </select>
+
+    <!-- Razítko dobropisování — volá se po VYSTAVENÍ dobropisu (koncept nic neuvolňuje). -->
+    <update id="markCredited">
+        UPDATE billing.invoices
+        SET credited_at = NOW()
+        WHERE id = #{id}
+    </update>
+
+    <!--
+        Všechny faktury jednoho zákazníka jako seznamové řádky.
+        Bez fulltextu, takže JOIN na zakázky/zákazníky/vozidla není potřeba —
+        zobrazované hodnoty jdou z vlastních snapshot sloupců faktury.
+    -->
+    <select id="findByCustomerId" resultMap="InvoiceListRowResultMap">
+        SELECT
+            i.id, i.invoice_number, i.issue_date, i.due_date,
+            i.status, i.payment_method, i.variable_symbol, i.credited_at, i.handed_over_at,
+            o.description AS order_description,
+            <include refid="hasDraftCreditNote"/> AS has_draft_credit_note,
+            i.order_id, i.order_number_snapshot AS order_number,
+            i.customer_id, i.customer_name_snapshot AS customer_display_name,
+            COALESCE(t.total_net,   0) AS total_net,
+            COALESCE(t.total_vat,   0) AS total_vat,
+            COALESCE(t.total_gross, 0) AS total_gross,
+            COALESCE(t.total_to_pay, 0) AS total_to_pay
+        FROM billing.invoices AS i
+        LEFT JOIN billing.v_invoice_price_totals AS t ON t.invoice_id = i.id
+        <!-- Kvůli popisu zakázky (V líčení faktury není, bere se živě) — hlavní seznam
+             tenhle JOIN má už ve `searchJoins`. -->
+        LEFT JOIN "order".orders AS o ON o.id = i.order_id
+        WHERE i.customer_id = #{customerId}
+        ORDER BY i.issue_date DESC, i.id DESC
+    </select>
+
+    <!--
+        Jedna stránka seznamu faktur.
+        Součty jdou z LEFT JOIN na view: faktura bez položek tam řádek nemá,
+        takže COALESCE mění výsledné NULL na 0.
+    -->
+    <select id="search" resultMap="InvoiceListRowResultMap">
+        SELECT
+            i.id, i.invoice_number, i.issue_date, i.due_date,
+            i.status, i.payment_method, i.variable_symbol, i.credited_at, i.handed_over_at,
+            o.description AS order_description,
+            <include refid="hasDraftCreditNote"/> AS has_draft_credit_note,
+            i.order_id, i.order_number_snapshot AS order_number,
+            i.customer_id, i.customer_name_snapshot AS customer_display_name,
+
+            COALESCE(t.total_net,   0) AS total_net,
+            COALESCE(t.total_vat,   0) AS total_vat,
+            COALESCE(t.total_gross, 0) AS total_gross,
+            COALESCE(t.total_to_pay, 0) AS total_to_pay
+        <include refid="searchJoins"/>
+        LEFT JOIN billing.v_invoice_price_totals AS t ON t.invoice_id = i.id
+        <include refid="searchWhere"/>
+        ORDER BY <include refid="invoiceSortOrder"/>
+        LIMIT #{params.pageSize} OFFSET #{params.offset}
+    </select>
+
+    <!--
+        Whitelist seřaditelných sloupců (TD-46, U3R.1). Výchozí `issueDate` sestupně
+        (nejnovější faktury první) nastavuje InvoiceSearchParams — dřív to byl pevný
+        fragment ve <otherwise>, který ignoroval sortDesc.
+        Stav se neřadí podle abecedy, ale podle pořadí ve stavovém automatu
+        (koncept → vystavena → zaplacena → stornována) — abecední pořadí by nedávalo smysl.
+    -->
+    <sql id="invoiceSortOrder">
+        <choose>
+            <when test="params.sortBy == 'invoiceNumber'">
+                i.invoice_number <if test="params.sortDesc">DESC</if>, i.id <if test="params.sortDesc">DESC</if>
+            </when>
+            <when test="params.sortBy == 'customerName'">
+                i.customer_name_snapshot <if test="params.sortDesc">DESC</if>, i.id <if test="params.sortDesc">DESC</if>
+            </when>
+            <when test="params.sortBy == 'dueDate'">
+                i.due_date <if test="params.sortDesc">DESC</if> NULLS LAST, i.id <if test="params.sortDesc">DESC</if>
+            </when>
+            <!--
+                Klíč se z důvodu zpětné kompatibility API jmenuje dál `totalGross`, ale řadí se
+                podle ČÁSTKY K ÚHRADĚ — tedy podle hodnoty, kterou seznam skutečně zobrazuje
+                (V67/KN-7). Kdyby se řadilo podle daňového součtu, sloupec by ukazoval jedno
+                a pořadí odpovídalo jinému.
+            -->
+            <when test="params.sortBy == 'totalGross'">
+                COALESCE(t.total_to_pay, 0) <if test="params.sortDesc">DESC</if>, i.id <if test="params.sortDesc">DESC</if>
+            </when>
+            <when test="params.sortBy == 'status'">
+                ARRAY_POSITION(ARRAY['DRAFT','ISSUED','PAID','CANCELLED']::text[], i.status::text)
+                <if test="params.sortDesc">DESC</if>, i.id <if test="params.sortDesc">DESC</if>
+            </when>
+            <otherwise>
+                i.issue_date <if test="params.sortDesc">DESC</if>, i.id <if test="params.sortDesc">DESC</if>
+            </otherwise>
+        </choose>
+    </sql>
+
+    <!-- Stejné JOINy a filtry jako search, bez view, LIMIT a OFFSET. -->
+    <select id="countSearch" resultType="java.lang.Long">
+        SELECT COUNT(*)
+        <include refid="searchJoins"/>
+        <include refid="searchWhere"/>
+    </select>
+
+    <!-- Nevrací žádný řádek, když faktura nemá položky — viz InvoiceSummary.zero(). -->
+    <select id="findSummaryByInvoiceId" resultMap="InvoiceSummaryResultMap">
+        SELECT t.invoice_id, t.total_net, t.total_vat, t.total_gross, t.rounding, t.total_to_pay
+        FROM billing.v_invoice_price_totals AS t
+        WHERE t.invoice_id = #{invoiceId}
+    </select>
+
+    <!-- Rekapitulace DPH po sazbách. Prázdné, když faktura nemá položky. -->
+    <select id="findVatSummaryByInvoiceId" resultMap="InvoiceVatSummaryResultMap">
+        SELECT s.invoice_id, s.vat_rate, s.base, s.vat, s.total
+        FROM billing.v_invoice_vat_summary AS s
+        WHERE s.invoice_id = #{invoiceId}
+        ORDER BY s.vat_rate
+    </select>
+
+
+    <!--
+        Počet faktur zakázky VČETNĚ stornovaných a dobropisovaných — širší predikát než
+        findByOrderId, které vrací jen aktivní doklad. Pro mazání zakázky je rozhodující,
+        jestli po ní kdy zůstala jakákoli stopa v účetnictví (V84).
+    -->
+    <select id="countByOrderId" resultType="int">
+        SELECT COUNT(*) FROM billing.invoices WHERE order_id = #{orderId}
+    </select>
+</mapper>

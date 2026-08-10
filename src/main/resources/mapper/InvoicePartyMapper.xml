@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+
+<!--
+    InvoicePartyMapper.xml — SQL pro cz.palo.autoservis.mapper.InvoicePartyMapper
+    Tabulka: billing.invoice_party (vždy plně kvalifikovaná dle konvence projektu)
+-->
+<mapper namespace="cz.palo.autoservis.mapper.InvoicePartyMapper">
+
+    <resultMap id="InvoicePartyResultMap" type="cz.palo.autoservis.model.domain.billing.InvoiceParty">
+        <id     property="id"           column="id"/>
+        <result property="invoiceId"    column="invoice_id"/>
+        <result property="role"         column="role"/>
+        <result property="name"         column="name"/>
+        <result property="ico"          column="ico"/>
+        <result property="dic"          column="dic"/>
+        <result property="street"       column="street"/>
+        <result property="streetNumber" column="street_number"/>
+        <result property="city"         column="city"/>
+        <result property="postalCode"   column="postal_code"/>
+        <result property="countryCode"  column="country_code"/>
+        <result property="bankAccount"  column="bank_account"/>
+        <result property="iban"         column="iban"/>
+        <result property="swift"        column="swift"/>
+        <result property="createdAt"    column="created_at"/>
+    </resultMap>
+
+    <sql id="invoicePartyColumns">
+        ip.id, ip.invoice_id, ip.role,
+        ip.name, ip.ico, ip.dic,
+        ip.street, ip.street_number, ip.city, ip.postal_code, ip.country_code,
+        ip.bank_account, ip.iban, ip.swift,
+        ip.created_at
+    </sql>
+
+    <insert id="insert"
+            parameterType="cz.palo.autoservis.model.domain.billing.InvoiceParty"
+            useGeneratedKeys="true" keyProperty="id" keyColumn="id">
+        INSERT INTO billing.invoice_party (
+            invoice_id, role, name, ico, dic,
+            street, street_number, city, postal_code, country_code,
+            bank_account, iban, swift
+        ) VALUES (
+            #{invoiceId},
+            #{role, typeHandler=cz.palo.autoservis.config.mybatis.PgEnumTypeHandler$InvoicePartyRoleHandler},
+            #{name}, #{ico}, #{dic},
+            #{street}, #{streetNumber}, #{city}, #{postalCode}, #{countryCode},
+            #{bankAccount}, #{iban}, #{swift}
+        )
+    </insert>
+
+    <select id="findByInvoiceId" resultMap="InvoicePartyResultMap">
+        SELECT <include refid="invoicePartyColumns"/>
+        FROM billing.invoice_party AS ip
+        WHERE ip.invoice_id = #{invoiceId}
+        ORDER BY ip.role
+    </select>
+
+</mapper>

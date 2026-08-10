@@ -1,0 +1,201 @@
+spring:
+  # Načítá lokální secrets (heslo DB, JWT klíč) z application-local.yaml,
+  # který je gitignorovaný. 'optional:' = aplikace nastartuje i bez souboru.
+  config:
+    import: optional:classpath:application-local.yaml
+
+  application:
+    name: autoservis
+
+  datasource:
+    url: jdbc:postgresql://localhost:5432/autoservis
+    #    url: jdbc:postgresql://localhost:5433/autoservis
+    username: postgres
+    password: ${DB_PASSWORD}            # skutečná hodnota v application-local.yaml (gitignore)
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      pool-name: AutoservisPool
+      maximum-pool-size: 20
+      minimum-idle: 5
+      connection-timeout: 30000
+      idle-timeout: 600000
+      max-lifetime: 1800000
+      # connection-init-sql: ODSTRANĚNO — způsobovalo problémy s detekcí schémat ve Flyway
+
+  ai:
+    anthropic:
+      api-key: ${ANTHROPIC_API_KEY}
+      chat:
+        options:
+          model: claude-sonnet-4-6
+          temperature: 0.0
+          # Tracked fields (value + sourceState per pole) zvětšují výstup —
+          # 4096 nestačilo na fakturu s ~12 řádky.
+          max-tokens: 8192
+
+  servlet:
+    multipart:
+      max-file-size: 10MB
+      max-request-size: 10MB
+
+  # ============================================================
+  # MAIL — odesílání faktur e-mailem (SMTP Seznam)
+  # ============================================================
+  # Přihlašovací údaje jsou secret (application-local.yaml / env) s prázdným
+  # defaultem, aby aplikace i testy nastartovaly bez nich — odeslání pak
+  # skončí srozumitelnou chybou EMAIL_NOT_CONFIGURED, ne pádem při startu.
+  # Přihlašuje se celou adresou; jako heslo použít „aplikační heslo" ze
+  # Zabezpečení Seznam účtu (vyžaduje dvoufázové ověření; platí jen pro
+  # IMAP/SMTP/CalDAV) — přežije změnu přihlašovacího hesla schránky a jde
+  # samostatně zneplatnit (rozhodnutí uživatele 2026-08-08). POZOR: se zapnutým
+  # dvoufázovým ověřením běžné heslo pro SMTP/IMAP přestává fungovat.
+  # IMAP: Seznam poštu odeslanou přes SMTP do Odeslaných sám neukládá (ověřeno
+  # 2026-08-08) — kopii tam po odeslání ukládá aplikace, jako to dělá poštovní
+  # klient. Stejné přihlášení, složka se hledá podle IMAP atributu \Sent.
+  mail:
+    host: smtp.seznam.cz
+    port: 465
+    username: ${MAIL_USERNAME:}
+    password: ${MAIL_PASSWORD:}
+    properties:
+      mail:
+        smtp:
+          auth: true
+          ssl:
+            enable: true
+          connectiontimeout: 5000
+          timeout: 10000
+          writetimeout: 10000
+        imap:
+          host: imap.seznam.cz
+          port: 993
+          ssl:
+            enable: true
+          connectiontimeout: 5000
+          timeout: 10000
+
+  # ============================================================
+  # FLYWAY
+  # ============================================================
+  flyway:
+    enabled: true
+    # Základní sada (dev/local + test): schéma + demo data. Produkce tuto hodnotu
+    # přepisuje na `db/migration,db/prod` (application-prod.yaml) — demo data se tedy
+    # do produkce nikdy nedostanou; produkce běží jen se schématem + produkčním seedem.
+    locations: classpath:db/migration,classpath:db/demo
+    # schemas: property záměrně odstraněna — schémata si spravují migrace samy
+    default-schema: public
+    # Brání automatickému smazání DB při konfliktu checksumů — v produkci nikdy nepovolovat
+    clean-disabled: true
+    # Validuje checksumy migrací při startu — odhalí neautorizované změny
+    validate-on-migrate: true
+    out-of-order: false
+#    baseline-on-migrate: false
+#    placeholders:
+#      schema: autoservis
+
+# ============================================================
+# MYBATIS
+# ============================================================
+mybatis:
+  # Umístění XML mapper souborů
+  mapper-locations: classpath:mapper/**/*.xml
+  # Základní balíček doménových POJO — umožňuje krátké názvy v XML (např. Customer místo cz.palo.autoservis.model.domain.customer.Customer)
+  type-aliases-package: cz.palo.autoservis.model.domain
+  # Vlastní type handlery pro PostgreSQL ENUMy
+  type-handlers-package: cz.palo.autoservis.config.mybatis
+  configuration:
+    # Automaticky mapuje snake_case sloupce DB na camelCase Java pole
+    map-underscore-to-camel-case: true
+    # U chybějících sloupců vrací null místo vyhození výjimky
+    call-setters-on-nulls: false
+    # Logování SQL — v produkci vypnout
+    log-impl: org.apache.ibatis.logging.slf4j.Slf4jImpl
+    # Sdílená second-level cache — vhodná pro read-only data typu role
+    cache-enabled: true
+    # Lazy loading vnořených asociací a kolekcí
+    lazy-loading-enabled: true
+    default-fetch-size: 100
+    default-statement-timeout: 30
+
+# ============================================================
+# LOGGING
+# ============================================================
+logging:
+  level:
+    cz.palo.autoservis: DEBUG
+    org.mybatis: DEBUG
+    org.flywaydb: INFO
+    org.springframework.security: DEBUG
+    org.springframework.security.web.authentication.dao.AbstractUserDetails.DaoAuthenticationProvider: TRACE
+
+# ============================================================
+# WAREHOUSE — konfigurace importu příjemek (draft pipeline)
+# ============================================================
+# defaults: hodnoty dosazované do draftu se stavem DEFAULTED, když v dokladu
+# chybí (typicky dodací list bez rozpisu DPH). Vědomě v yaml, ne v DB — mění je
+# vývojář, ne mechanik; bean WarehouseImportProperties je jediný šev.
+# allowed-units: uzavřený číselník měrných jednotek (Z-4) — validuje se
+# v service (confirm příjemky, create/update produktu), BEZ DB CHECKu;
+# stará data mimo číselník dožijí. Zrcadlí ho FE konstanta ALLOWED_UNITS
+# (frontend/…/src/api/units.js) — při změně upravit obojí.
+warehouse:
+  import:
+    defaults:
+      vat-rate: 21          # % DPH
+      currency: CZK
+      unit: ks
+      tolerance: 0.05       # tolerance aritmetických kontrol (haléřové zaokrouhlení)
+    allowed-units: [ks, l, kg, bal, m, sada, pár, hod]
+
+# ============================================================
+# EXTERNÍ REGISTRY — dataovozidlech.cz (Datová kostka RSV), ARES
+# ============================================================
+registry:
+  dataovozidlech:
+    base-url: https://api.dataovozidlech.cz
+    # API klíč z https://dataovozidlech.cz/registraceapi — skutečná hodnota
+    # v application-local.yaml (gitignore) nebo v prostředí. Prázdný default,
+    # aby aplikace (i testy) nastartovaly bez klíče; volání pak selžou
+    # s REGISTRY_AUTH_FAILED místo pádu při startu.
+    api-key: ${DATAOVOZIDLECH_API_KEY:}
+    connect-timeout: 3s
+    read-timeout: 5s
+  # ARES (MF ČR) — veřejné API, bez klíče. Dohledání firmy podle IČO
+  # pro předvyplnění formuláře zákazníka.
+  ares:
+    base-url: https://ares.gov.cz/ekonomicke-subjekty-v-be/rest
+    connect-timeout: 3s
+    read-timeout: 5s
+
+# ============================================================
+# JWT
+# ============================================================
+jwt:
+  # Podpisový klíč (HMAC-SHA256). Skutečná hodnota žije v application-local.yaml (gitignore).
+  secret: ${JWT_SECRET}
+  expiration: 28800000         # Access token — 8 hodin (vývoj). V produkci přepnout na 15 minut.
+  refresh-expiration: 604800000 # Refresh token — 7 dní
+  cookie-secure: false          # true v produkci — HTTPS only
+
+# ============================================================
+# UZAMČENÍ ÚČTU (audit 2026-07-30 — KN-5)
+# ============================================================
+# Po 10 neúspěšných přihlášeních se účet zamkne (LoginAttemptService).
+# Do V64 byl zámek TRVALÝ a odemknout ho umělo jen ADMIN-only resetování hesla —
+# produkční seed má jediný účet `admin`, takže ho kdokoli z internetu deseti
+# požadavky natrvalo vyřadil. Od V64 zámek po této lhůtě vyprší; lhůtu vyhodnocuje
+# DB (sloupec security.users.locked_at), ne aplikační hodiny.
+lockout:
+  duration: 15m               # rozhodnutí uživatele 2026-07-30
+
+# ============================================================
+# CORS (E7 — audit R-6/TD-63)
+# ============================================================
+# Originy, ze kterých smí prohlížeč volat API s cookies. Dev = Vite. V produkci
+# přepiš v application-prod.yaml na skutečnou doménu FE (přes env CORS_ALLOWED_ORIGINS).
+# Vazba přes CorsProperties (@ConfigurationProperties) — to YAML seznam umí. NEpřevádět
+# na @Value, které YAML block-sequence navázat neumí (login by spadl na „Invalid CORS request",
+# regrese E7). Hlídá CorsPropertiesBindingTest + CorsConfigTest.
+cors:
+  allowed-origins: http://localhost:5173, http://127.0.0.1:5173

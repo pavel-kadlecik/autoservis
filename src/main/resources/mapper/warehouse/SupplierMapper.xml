@@ -1,0 +1,137 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+
+
+<mapper namespace="cz.palo.autoservis.mapper.SupplierMapper">
+
+    <resultMap id="SupplierResultMap" type="cz.palo.autoservis.model.domain.warehouse.Supplier">
+        <id property="id" column="id"/>
+        <result property="name" column="name"/>
+        <result property="registrationNumber" column="registration_number"/>
+        <result property="vatId" column="vat_id"/>
+        <result property="street" column="street"/>
+        <result property="city" column="city"/>
+        <result property="postalCode" column="postal_code"/>
+        <result property="countryCode" column="country_code"/>
+        <result property="bankAccount" column="bank_account"/>
+        <result property="iban" column="iban"/>
+        <result property="swift" column="swift"/>
+        <result property="email" column="email"/>
+        <result property="phone" column="phone"/>
+        <result property="active" column="is_active"/>
+        <result property="createdAt" column="created_at" />
+        <result property="updatedAt" column="updated_at"/>
+    </resultMap>
+
+    <sql id="supplierColumns">
+        s.id, s.name, s.registration_number, s.vat_id,
+        s.street, s.city, s.postal_code, s.country_code,
+        s.bank_account, s.iban, s.swift, s.email, s.phone,
+        s.is_active, s.created_at, s.updated_at
+    </sql>
+
+    <!-- Dynamická WHERE klauzule sdílená search a countSearch. -->
+    <sql id="searchWhere">
+        <where>
+            <if test="params.activeOnly">
+                s.is_active = TRUE
+            </if>
+            <if test="params.search != null and params.search != ''">
+                <bind name="searchLike" value="'%' + params.search + '%'" />
+                AND (
+                LOWER(s.name)           LIKE LOWER(#{searchLike})
+                OR LOWER(s.registration_number) LIKE LOWER(#{searchLike})
+                OR LOWER(s.vat_id)      LIKE LOWER(#{searchLike})
+                OR LOWER(s.city)      LIKE LOWER(#{searchLike})
+                )
+            </if>
+        </where>
+    </sql>
+
+    <!--
+        Full-replace sémantika (TD-54) — stejně jako ostatní moduly: pole, které v UpdateRequest
+        chybí (null), se zapíše jako NULL, takže jednou vyplněné IČO/IBAN/e-mail jde vymazat.
+        `name` je NOT NULL, ale UpdateRequest ho vynucuje (@NotBlank), takže sem přijde vždy vyplněné.
+        Dřívější dynamické <if test="x != null"> dělalo PATCH — vyplněnou hodnotu nešlo vynulovat.
+    -->
+    <update id="update" parameterType="cz.palo.autoservis.model.domain.warehouse.Supplier">
+        UPDATE warehouse.suppliers s
+        SET name                = #{name},
+            registration_number = #{registrationNumber},
+            vat_id              = #{vatId},
+            street              = #{street},
+            city                = #{city},
+            postal_code         = #{postalCode},
+            <!-- country_code je NOT NULL DEFAULT 'CZ' — vymazat ho nejde, takže chybějící
+                 hodnotu ponecháme (COALESCE), na rozdíl od ostatních, clearovatelných polí. -->
+            country_code        = COALESCE(#{countryCode}, s.country_code),
+            bank_account        = #{bankAccount},
+            iban                = #{iban},
+            swift               = #{swift},
+            email               = #{email},
+            phone               = #{phone}
+        WHERE s.id = #{id}
+    </update>
+
+    <select id="findById" resultMap="SupplierResultMap">
+    SELECT
+        <include refid="supplierColumns"></include>
+        FROM warehouse.suppliers s
+    WHERE s.id = #{id}
+    </select>
+
+
+    <select id="search" resultMap="SupplierResultMap">
+        SELECT
+        <include refid="supplierColumns"/>
+        FROM warehouse.suppliers s
+        <include refid="searchWhere"/>
+        ORDER BY <include refid="supplierSortOrder"/>
+        LIMIT #{params.pageSize} OFFSET #{params.offset}
+    </select>
+
+    <!-- Whitelist seřaditelných sloupců (TD-46, U3R.1); výchozí klíč `name`. -->
+    <sql id="supplierSortOrder">
+        <choose>
+            <when test="params.sortBy == 'registrationNumber'">
+                s.registration_number <if test="params.sortDesc">DESC</if> NULLS LAST, s.id <if test="params.sortDesc">DESC</if>
+            </when>
+            <when test="params.sortBy == 'vatId'">
+                s.vat_id <if test="params.sortDesc">DESC</if> NULLS LAST, s.id <if test="params.sortDesc">DESC</if>
+            </when>
+            <when test="params.sortBy == 'city'">
+                s.city <if test="params.sortDesc">DESC</if> NULLS LAST, s.id <if test="params.sortDesc">DESC</if>
+            </when>
+            <otherwise>
+                s.name <if test="params.sortDesc">DESC</if>, s.id <if test="params.sortDesc">DESC</if>
+            </otherwise>
+        </choose>
+    </sql>
+
+    <select id="countSearch" resultType="java.lang.Long">
+        SELECT COUNT(*)
+        FROM warehouse.suppliers s
+        <include refid="searchWhere"/>
+    </select>
+
+    <select id="existsByRegistrationNumber" resultType="java.lang.Boolean">
+        SELECT EXISTS (SELECT 1
+                       FROM warehouse.suppliers s
+                       WHERE s.id != #{id}
+                       AND s.registration_number = #{registrationNumber})
+    </select>
+
+    <update id="deactivate">
+        UPDATE warehouse.suppliers
+        SET is_active = FALSE
+        WHERE id = #{id}
+    </update>
+
+    <update id="activate">
+        UPDATE warehouse.suppliers
+        SET is_active = TRUE
+        WHERE id = #{id}
+    </update>
+
+</mapper>

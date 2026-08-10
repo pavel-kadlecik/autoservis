@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="cz.palo.autoservis.mapper.CreditNoteMapper">
+
+    <resultMap id="CreditNoteResultMap" type="cz.palo.autoservis.model.domain.billing.CreditNote">
+        <id     property="id"                 column="id"/>
+        <result property="creditNoteNumber"   column="credit_note_number"/>
+        <result property="originalInvoiceId"  column="original_invoice_id"/>
+        <result property="correctionReason"   column="correction_reason"/>
+        <result property="issueDate"          column="issue_date"/>
+        <result property="taxableSupplyDate"  column="taxable_supply_date"/>
+        <result property="status"             column="status"
+                typeHandler="cz.palo.autoservis.config.mybatis.PgEnumTypeHandler$InvoiceStatusHandler"/>
+        <result property="createdAt"          column="created_at"/>
+        <result property="updatedAt"          column="updated_at"/>
+        <result property="createdBy"          column="created_by"/>
+    </resultMap>
+
+    <sql id="creditNoteColumns">
+        cn.id, cn.credit_note_number, cn.original_invoice_id, cn.correction_reason,
+        cn.issue_date, cn.taxable_supply_date, cn.status,
+        cn.created_at, cn.updated_at, cn.created_by
+    </sql>
+
+    <insert id="insert" parameterType="cz.palo.autoservis.model.domain.billing.CreditNote"
+            useGeneratedKeys="true" keyProperty="id" keyColumn="id">
+        INSERT INTO billing.credit_notes (
+            original_invoice_id, correction_reason, issue_date, taxable_supply_date, status, created_by
+        ) VALUES (
+            #{originalInvoiceId}, #{correctionReason}, #{issueDate}, #{taxableSupplyDate},
+            #{status, typeHandler=cz.palo.autoservis.config.mybatis.PgEnumTypeHandler$InvoiceStatusHandler},
+            #{createdBy}
+        )
+    </insert>
+
+    <select id="findById" resultMap="CreditNoteResultMap">
+        SELECT <include refid="creditNoteColumns"/>
+        FROM billing.credit_notes AS cn
+        WHERE cn.id = #{id}
+    </select>
+
+    <select id="findByOriginalInvoiceId" resultMap="CreditNoteResultMap">
+        SELECT <include refid="creditNoteColumns"/>
+        FROM billing.credit_notes AS cn
+        WHERE cn.original_invoice_id = #{invoiceId}
+        ORDER BY cn.id
+    </select>
+
+    <!-- Guardovaný přechod stavu (jako InvoiceMapper.updateStatus); trigger při ISSUED přidělí číslo. -->
+    <update id="updateStatus">
+        UPDATE billing.credit_notes
+        SET status = #{status, typeHandler=cz.palo.autoservis.config.mybatis.PgEnumTypeHandler$InvoiceStatusHandler}
+        WHERE id = #{id}
+          AND status = #{expectedStatus, typeHandler=cz.palo.autoservis.config.mybatis.PgEnumTypeHandler$InvoiceStatusHandler}
+    </update>
+
+    <!--
+        Smazání KONCEPTU opravného dokladu (výjimka z R-06, viz mapper). Na credit_notes
+        neodkazuje žádný cizí klíč, rozdíly ani strany se neukládají (odvozují se z původní
+        faktury), takže mazání nenechává nic osiřelého. Guard WHERE status='DRAFT' chrání
+        vystavený doklad — 0 řádků → 409.
+    -->
+    <delete id="deleteDraft">
+        DELETE FROM billing.credit_notes
+        WHERE id = #{id}
+          AND status = 'DRAFT'::billing.invoice_status
+    </delete>
+
+</mapper>

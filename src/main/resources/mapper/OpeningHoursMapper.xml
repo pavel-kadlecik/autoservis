@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+
+<mapper namespace="cz.palo.autoservis.mapper.OpeningHoursMapper">
+
+    <resultMap id="OpeningHoursMap" type="cz.palo.autoservis.model.domain.schedule.OpeningHours">
+        <id     property="dayOfWeek" column="day_of_week"/>
+        <result property="opensAt"   column="opens_at"/>
+        <result property="closesAt"  column="closes_at"/>
+        <result property="updatedAt" column="updated_at"/>
+    </resultMap>
+
+    <resultMap id="ScheduleSettingsMap" type="cz.palo.autoservis.model.domain.schedule.ScheduleSettings">
+        <id     property="id"                  column="id"/>
+        <result property="openingHoursEnabled" column="opening_hours_enabled"/>
+        <result property="updatedAt"           column="updated_at"/>
+    </resultMap>
+
+    <select id="findAll" resultMap="OpeningHoursMap">
+        SELECT day_of_week, opens_at, closes_at, updated_at
+        FROM schedule.opening_hours
+        ORDER BY day_of_week
+    </select>
+
+    <select id="findByDayOfWeek" resultMap="OpeningHoursMap">
+        SELECT day_of_week, opens_at, closes_at, updated_at
+        FROM schedule.opening_hours
+        WHERE day_of_week = #{dayOfWeek}
+    </select>
+
+    <!--
+      Řádky se jen přepisují, nikdy nezakládají ani nemažou — sedm dnů týdne je konstanta
+      a založila je migrace V79. UPSERT by tu jen zaváděl cestu, jak si do tabulky přidat
+      osmý den, který CHECK stejně odmítne.
+    -->
+    <update id="updateDay">
+        UPDATE schedule.opening_hours
+        SET opens_at  = #{opensAt},
+            closes_at = #{closesAt}
+        WHERE day_of_week = #{dayOfWeek}
+    </update>
+
+    <select id="findSettings" resultMap="ScheduleSettingsMap">
+        SELECT id, opening_hours_enabled, updated_at
+        FROM schedule.schedule_settings
+        WHERE id = 1
+    </select>
+
+    <update id="updateSettings">
+        UPDATE schedule.schedule_settings
+        SET opening_hours_enabled = #{openingHoursEnabled}
+        WHERE id = 1
+    </update>
+
+</mapper>

@@ -1,0 +1,301 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+
+<!--
+    UserMapper.xml — SQL pro cz.palo.autoservis.security.mapper.UserMapper
+    Tabulka: security.users (vždy plně kvalifikovaná dle konvence projektu)
+-->
+<mapper namespace="cz.palo.autoservis.security.mapper.UserMapper">
+
+    <!-- =========================================================
+         Result map
+         ========================================================= -->
+
+    <!-- Uživatel s vnořenou kolekcí rolí — načteno jedním JOIN dotazem. -->
+    <resultMap id="UserWithRolesResultMap" type="User">
+        <id     column="u_id"                      property="id"                     javaType="long"/>
+        <result column="u_username"                property="username"/>
+        <result column="u_email"                   property="email"/>
+        <result column="u_password_hash"           property="passwordHash"/>
+        <result column="u_enabled"                 property="enabled"/>
+        <result column="u_account_non_expired"     property="accountNonExpired"/>
+        <result column="u_account_non_locked"      property="accountNonLocked"/>
+        <result column="u_credentials_non_expired" property="credentialsNonExpired"/>
+        <result column="u_failed_login_attempts"   property="failedLoginAttempts"/>
+        <result column="u_last_login_at"           property="lastLoginAt"            javaType="java.time.OffsetDateTime"/>
+        <result column="u_password_changed_at"     property="passwordChangedAt"      javaType="java.time.OffsetDateTime"/>
+        <result column="u_created_at"              property="createdAt"              javaType="java.time.OffsetDateTime"/>
+        <result column="u_updated_at"              property="updatedAt"              javaType="java.time.OffsetDateTime"/>
+        <result column="u_locked_at"               property="lockedAt"               javaType="java.time.OffsetDateTime"/>
+        <collection property="roles" ofType="Role">
+            <id     column="r_id"          property="id"/>
+            <result column="r_name"        property="name"/>
+            <result column="r_description" property="description"/>
+        </collection>
+    </resultMap>
+
+    <!-- =========================================================
+         Queries
+         ========================================================= -->
+
+    <!--
+        Volá Spring Security při každém přihlášení.
+        Načítá uživatele + role jedním JOINem — žádné N+1.
+    -->
+    <select id="findByUsername" resultMap="UserWithRolesResultMap">
+        SELECT
+            u.id                      AS u_id,
+            u.username                AS u_username,
+            u.email                   AS u_email,
+            u.password_hash           AS u_password_hash,
+            u.enabled                 AS u_enabled,
+            u.account_non_expired     AS u_account_non_expired,
+            u.account_non_locked      AS u_account_non_locked,
+            u.credentials_non_expired AS u_credentials_non_expired,
+            u.failed_login_attempts   AS u_failed_login_attempts,
+            u.last_login_at           AS u_last_login_at,
+            u.password_changed_at     AS u_password_changed_at,
+            u.created_at              AS u_created_at,
+            u.updated_at              AS u_updated_at,
+            u.locked_at               AS u_locked_at,
+            r.id                      AS r_id,
+            r.name                    AS r_name,
+            r.description             AS r_description
+        FROM security.users u
+        LEFT JOIN security.user_roles ur ON ur.user_id = u.id
+        LEFT JOIN security.roles      r  ON r.id       = ur.role_id
+        WHERE u.username = #{username}
+          AND u.enabled  = TRUE
+    </select>
+
+    <select id="findById" resultMap="UserWithRolesResultMap">
+        SELECT
+            u.id                      AS u_id,
+            u.username                AS u_username,
+            u.email                   AS u_email,
+            u.password_hash           AS u_password_hash,
+            u.enabled                 AS u_enabled,
+            u.account_non_expired     AS u_account_non_expired,
+            u.account_non_locked      AS u_account_non_locked,
+            u.credentials_non_expired AS u_credentials_non_expired,
+            u.failed_login_attempts   AS u_failed_login_attempts,
+            u.last_login_at           AS u_last_login_at,
+            u.password_changed_at     AS u_password_changed_at,
+            u.created_at              AS u_created_at,
+            u.updated_at              AS u_updated_at,
+            u.locked_at               AS u_locked_at,
+            r.id                      AS r_id,
+            r.name                    AS r_name,
+            r.description             AS r_description
+        FROM security.users u
+        LEFT JOIN security.user_roles ur ON ur.user_id = u.id
+        LEFT JOIN security.roles      r  ON r.id       = ur.role_id
+        WHERE u.id = #{id}
+    </select>
+
+    <!-- =========================================================
+         Updates
+         ========================================================= -->
+
+    <update id="incrementFailedAttempts">
+        UPDATE security.users
+        SET failed_login_attempts = failed_login_attempts + 1
+        WHERE id = #{id}
+    </update>
+
+    <update id="resetFailedAttempts">
+        UPDATE security.users
+        SET failed_login_attempts = 0
+        WHERE id = #{id}
+    </update>
+
+    <update id="updateLastLogin">
+        UPDATE security.users
+        SET last_login_at         = NOW(),
+            failed_login_attempts = 0
+        WHERE id = #{id}
+    </update>
+
+    <!-- Zamkne účet a orazítkuje, KDY se to stalo — od locked_at se počítá expirace (V64/KN-5). -->
+    <update id="lockAccount">
+        UPDATE security.users
+        SET account_non_locked = FALSE,
+            locked_at          = NOW()
+        WHERE id = #{id}
+    </update>
+
+    <!-- Odemkne účet a vynuluje čítač neúspěšných pokusů — adminský reset hesla. -->
+    <update id="unlockAccount">
+        UPDATE security.users
+        SET account_non_locked = TRUE,
+            failed_login_attempts = 0,
+            locked_at             = NULL
+        WHERE id = #{id}
+    </update>
+
+    <!--
+        Uvolní zámek, kterému už uplynula lhůta (V64/KN-5). Guardovaný zápis: podmínky jsou
+        v WHERE, ne v Javě, takže souběžné pokusy o přihlášení nemohou zámek uvolnit dvakrát
+        ani ho uvolnit dřív, než má. 0 řádků = nebylo co uvolnit (účet není zamčený, nebo
+        lhůta ještě neuplynula) — volající to bere jako „zámek dál platí".
+
+        Čas se počítá výhradně v DB (locked_at i NOW() jsou z jedné hodiny), aby se nemíchal
+        s časem aplikačního serveru. Lhůta jde v sekundách, ne minutách — konfigurace je
+        Duration a hodnota pod minutu by se při přepočtu na minuty srazila na nulu.
+    -->
+    <update id="unlockIfLockExpired">
+        UPDATE security.users
+        SET account_non_locked    = TRUE,
+            failed_login_attempts = 0,
+            locked_at             = NULL
+        WHERE username           = #{username}
+          AND account_non_locked = FALSE
+          AND locked_at IS NOT NULL
+          AND locked_at + (INTERVAL '1 second' * #{lockoutSeconds}) &lt;= NOW()
+    </update>
+
+    <!-- =========================================================
+         Existence checks
+         ========================================================= -->
+
+    <select id="existsByEmail" resultType="boolean">
+        SELECT EXISTS(SELECT 1 FROM security.users WHERE email = #{email})
+    </select>
+
+    <!-- =========================================================
+         Admin CRUD — hledání / stránkovaný seznam s rolemi
+         ========================================================= -->
+
+    <sql id="searchWhere">
+        <where>
+            <if test="params.activeOnly">u.enabled = TRUE</if>
+            <if test="params.search != null and params.search != ''">
+                <bind name="searchLike" value="'%' + params.search + '%'" />
+                AND (
+                    LOWER(u.username) LIKE LOWER(#{searchLike})
+                    OR LOWER(u.email) LIKE LOWER(#{searchLike})
+                )
+            </if>
+            <if test="params.roleId != null">
+                AND EXISTS (
+                    SELECT 1 FROM security.user_roles ur2
+                    WHERE ur2.user_id = u.id AND ur2.role_id = #{params.roleId}
+                )
+            </if>
+        </where>
+    </sql>
+
+    <!-- Nejdřív stránkovat ID uživatelů, pak JOIN rolí — LIMIT tak neořízne joinované řádky. -->
+    <select id="search" resultMap="UserWithRolesResultMap">
+        SELECT
+            u.id                      AS u_id,
+            u.username                AS u_username,
+            u.email                   AS u_email,
+            u.password_hash           AS u_password_hash,
+            u.enabled                 AS u_enabled,
+            u.account_non_expired     AS u_account_non_expired,
+            u.account_non_locked      AS u_account_non_locked,
+            u.credentials_non_expired AS u_credentials_non_expired,
+            u.failed_login_attempts   AS u_failed_login_attempts,
+            u.last_login_at           AS u_last_login_at,
+            u.password_changed_at     AS u_password_changed_at,
+            u.created_at              AS u_created_at,
+            u.updated_at              AS u_updated_at,
+            u.locked_at               AS u_locked_at,
+            r.id                      AS r_id,
+            r.name                    AS r_name,
+            r.description             AS r_description
+        FROM security.users u
+        LEFT JOIN security.user_roles ur ON ur.user_id = u.id
+        LEFT JOIN security.roles      r  ON r.id       = ur.role_id
+        WHERE u.id IN (
+            SELECT u.id FROM security.users u
+            <include refid="searchWhere"/>
+            ORDER BY <include refid="userSortOrder"/>
+            LIMIT #{params.pageSize} OFFSET #{params.offset}
+        )
+        <!-- Řazení musí být i ve vnějším dotazu — JOIN na role pořadí z poddotazu neudrží. -->
+        ORDER BY <include refid="userSortOrder"/>
+    </select>
+
+    <!-- Whitelist seřaditelných sloupců. Název sloupce nejde předat přes #{} (je to
+         identifikátor, ne hodnota), takže whitelist je zároveň ochrana proti injection.
+         Směr patří dovnitř větve — fallback si nese vlastní DESC. -->
+    <sql id="userSortOrder">
+        <choose>
+            <when test="params.sortBy == 'username'">
+                u.username <if test="params.sortDesc">DESC</if>, u.id <if test="params.sortDesc">DESC</if>
+            </when>
+            <when test="params.sortBy == 'email'">
+                u.email <if test="params.sortDesc">DESC</if>, u.id <if test="params.sortDesc">DESC</if>
+            </when>
+            <when test="params.sortBy == 'lastLoginAt'">
+                u.last_login_at <if test="params.sortDesc">DESC</if> NULLS LAST, u.id <if test="params.sortDesc">DESC</if>
+            </when>
+            <otherwise>
+                u.created_at <if test="params.sortDesc">DESC</if>, u.id <if test="params.sortDesc">DESC</if>
+            </otherwise>
+        </choose>
+    </sql>
+
+    <select id="countSearch" resultType="long">
+        SELECT COUNT(*)
+        FROM security.users u
+        <include refid="searchWhere"/>
+    </select>
+
+    <!-- =========================================================
+         Admin CRUD — insert / update / password / status
+         ========================================================= -->
+
+    <insert id="insert" parameterType="User" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO security.users (username, email, password_hash, enabled)
+        VALUES (#{username}, #{email}, #{passwordHash}, #{enabled})
+    </insert>
+
+    <update id="updateEmail">
+        UPDATE security.users SET email = #{email} WHERE id = #{id}
+    </update>
+
+    <update id="updatePasswordHash">
+        UPDATE security.users
+        SET password_hash = #{passwordHash}, password_changed_at = NOW()
+        WHERE id = #{id}
+    </update>
+
+    <update id="deactivate">
+        UPDATE security.users SET enabled = FALSE WHERE id = #{id}
+    </update>
+
+    <update id="activate">
+        UPDATE security.users SET enabled = TRUE WHERE id = #{id}
+    </update>
+
+    <!-- =========================================================
+         Admin CRUD — role assignment
+         ========================================================= -->
+
+    <delete id="deleteRoles">
+        DELETE FROM security.user_roles WHERE user_id = #{userId}
+    </delete>
+
+    <insert id="insertRoles">
+        INSERT INTO security.user_roles (user_id, role_id, assigned_by)
+        VALUES
+        <foreach collection="roleIds" item="roleId" separator=",">
+            (#{userId}, #{roleId}, #{assignedBy})
+        </foreach>
+    </insert>
+
+    <select id="countEnabledByRoleExcluding" resultType="long">
+        SELECT COUNT(*)
+        FROM security.users u
+        JOIN security.user_roles ur ON ur.user_id = u.id
+        JOIN security.roles r ON r.id = ur.role_id
+        WHERE r.name = #{roleName}
+          AND u.enabled = TRUE
+          AND u.id != #{excludeUserId}
+    </select>
+
+</mapper>

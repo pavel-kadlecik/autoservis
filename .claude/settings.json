@@ -1,0 +1,39 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/hooks/guard-immutable.js",
+            "timeout": 15,
+            "statusMessage": "Kontrola: archiv a migrace jsou neměnné"
+          }
+        ]
+      }
+    ]
+  },
+  "permissions": {
+    "allow": [
+      "Bash(./mvnw *)",
+      "Bash(npm run *)",
+      "Bash(npm ci)",
+      "Bash(npm install)",
+      "Bash(npm test *)",
+      "Bash(git status)",
+      "Bash(git status *)",
+      "Bash(git log *)",
+      "Bash(git diff)",
+      "Bash(git diff *)",
+      "Bash(git show *)",
+      "Bash(git branch)",
+      "Bash(git ls-files *)"
+    ],
+    "deny": [
+      "Bash(git push --force*)",
+      "Bash(./mvnw flyway:clean*)",
+      "Bash(./mvnw flyway:repair*)"
+    ]
+  }
+}

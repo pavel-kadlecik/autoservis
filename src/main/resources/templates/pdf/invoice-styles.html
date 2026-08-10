@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="cs" xmlns:th="http://www.thymeleaf.org">
+<!--
+    Styly faktury jako Thymeleaf fragment.
+    Vkládá se do pdf/invoice.html přes: <style th:replace="~{pdf/invoice-styles :: styles}"></style>
+    Thymeleaf fragment vloží CSS ještě před generováním PDF, takže openhtmltopdf
+    dostane jeden hotový dokument a neřeší žádnou externí cestu (base URI).
+-->
+<head>
+<style th:fragment="styles">
+    @page {
+        size: A4;
+        margin: 12mm 12mm 16mm 12mm;
+
+        /* Patička opakovaná na každé straně */
+        @bottom-left {
+            content: element(footerLeft);   /* číslo faktury — viz .doc-footer níže */
+        }
+        @bottom-right {
+            content: "Strana " counter(page) " z " counter(pages);
+            font-size: 8pt;
+            color: #777;
+        }
+    }
+
+    body {
+        font-family: 'DejaVu Sans', sans-serif;
+        font-size: 10pt;
+        color: #000;
+    }
+
+    table {
+        width: 100%;
+        border-collapse: collapse;
+    }
+
+    h1 {
+        font-size: 26pt;
+        margin: 0;
+    }
+
+    .text-right  { text-align: right; }
+    .muted       { color: #555; }
+    .bold        { font-weight: bold; }
+
+    /* Šedý pruh nadpisu sekce (Dodavatel, Platební údaje, …) */
+    .section-head {
+        background-color: #595959;
+        color: #ffffff;
+        font-weight: bold;
+        padding: 4px 8px;
+        page-break-after: avoid;
+    }
+
+    .section {
+        margin-top: 10px;
+    }
+
+    /* Strany faktury */
+    .parties td {
+        width: 50%;
+        vertical-align: top;
+        padding: 8px 8px 0 8px;
+    }
+    .party-line {
+        line-height: 1.4;
+    }
+    .party-block {
+        margin-top: 8px;
+    }
+
+    /* Dvousloupcová sekce (platební údaje) */
+    .two-col > td {
+        width: 50%;
+        vertical-align: top;
+        padding: 8px;
+    }
+    .kv td {
+        padding: 2px 6px 2px 0;
+        vertical-align: top;
+    }
+    .kv td.k {
+        color: #555;
+        white-space: nowrap;
+    }
+
+    /* Tabulka položek */
+    .items {
+        table-layout: fixed;
+        font-size: 9pt;                 /* 8 sloupců — menší písmo, ať se vejdou */
+        -fs-table-paginate: paginate;   /* openhtmltopdf: opakovat hlavičku tabulky na každé straně */
+    }
+    .items th {
+        background-color: #eeeeee;
+        text-align: left;
+        padding: 4px 5px;
+        border-bottom: 1px solid #999;
+        white-space: nowrap;           /* názvy v hlavičce vždy na jeden řádek */
+    }
+    .items td {
+        padding: 4px 5px;
+        border-bottom: 1px solid #e0e0e0;
+        /* Dlouhý souvislý řetězec bez mezery (kód, číslo dílu) se zalomí uvnitř buňky,
+           místo aby přetekl přes okraj do cenových sloupců. break-word láme jen slova,
+           která se jinak nevejdou — běžné víceslovné názvy zůstanou beze změny.
+           word-wrap je starší název, který openhtmltopdf ctí; overflow-wrap moderní alias. */
+        word-wrap: break-word;
+        overflow-wrap: break-word;
+    }
+    /* Zarovnání sloupců — platí pro hlavičku i tělo stejně (podle pořadí sloupce) */
+    .items th:nth-child(2), .items td:nth-child(2),   /* Počet */
+    .items th:nth-child(4), .items td:nth-child(4),   /* Cena za M.J. */
+    .items th:nth-child(5), .items td:nth-child(5),   /* DPH % */
+    .items th:nth-child(6), .items td:nth-child(6),   /* bez DPH */
+    .items th:nth-child(7), .items td:nth-child(7),   /* DPH */
+    .items th:nth-child(8), .items td:nth-child(8) {  /* s DPH */
+        text-align: right;
+    }
+
+    /* Vícestránková faktura — pravidla stránkování */
+    .items thead {
+        display: table-header-group;   /* hlavička tabulky se opakuje na každé straně */
+    }
+    .items tbody tr {
+        page-break-inside: avoid;      /* řádek položky se nerozdělí přes okraj strany */
+    }
+    .keep-together {
+        page-break-inside: avoid;      /* logický blok drží pohromadě */
+    }
+    /* Pata dokladu jako jeden celek (rekapitulace DPH + součty + vozidlo + QR + podpis).
+       Buď se celá vejde na stranu, nebo se celá přesune na další — nikdy se nerozdělí
+       (rozhodnutí B). Div ctí openhtmltopdf spolehlivěji než tabulka (page-break-inside). */
+    .footer-group {
+        page-break-inside: avoid;
+    }
+
+    /* Rekapitulace DPH po sazbách */
+    .vat-summary {
+        font-size: 9pt;
+    }
+    .vat-summary th {
+        text-align: right;
+        border-bottom: 1px solid #999;
+        padding: 3px 6px;
+        color: #555;
+        font-weight: normal;
+    }
+    .vat-summary th:first-child {
+        text-align: left;
+    }
+    .vat-summary td {
+        text-align: right;
+        padding: 3px 6px;
+    }
+    .vat-summary td:first-child {
+        text-align: left;
+    }
+
+    /* Součty vpravo — margin-top: 0, aby první řádek (Základ daně) byl
+       v jedné rovině s hlavičkou rekapitulace DPH vlevo (obě buňky mají vertical-align: top). */
+    .totals {
+        margin-top: 0;
+    }
+    .totals td {
+        padding: 4px 8px;
+    }
+    .totals .grand td {
+        background-color: #595959;
+        color: #ffffff;
+        font-weight: bold;
+        font-size: 12pt;
+    }
+
+    .vehicle {
+        margin-top: 12px;
+        font-size: 9pt;
+        color: #333;
+        line-height: 1.5;
+    }
+
+    .footer-note {
+        margin-top: 30px;
+        font-size: 9pt;
+        color: #777;
+    }
+
+    /*
+       Running element: tento prvek se vyjme z běžného toku a místo něj
+       se vykreslí do patičky (@bottom-left) na KAŽDÉ straně.
+    */
+    .doc-footer {
+        position: running(footerLeft);
+        font-size: 8pt;
+        color: #777;
+    }
+</style>
+</head>
+</html>

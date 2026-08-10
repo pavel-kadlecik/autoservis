@@ -1,0 +1,32 @@
+spring:
+  config:
+    activate:
+      on-profile: prod
+  datasource:
+    username: autoservis_app
+
+  # Produkce: schéma (db/migration) + produkční seed (db/prod: jeden admin), BEZ demo
+  # dat (db/demo se zde neuvádí). Přepisuje `locations` ze základního application.yaml.
+  flyway:
+    locations: classpath:db/migration,classpath:db/prod
+    placeholders:
+      # BCrypt hash hesla admina — dodán env proměnnou ADMIN_PASSWORD_HASH (/opt/autoservis/.env),
+      # nikdy natvrdo v gitu. Použit v db/prod/V60__prod_seed.sql jako ${admin_password_hash}.
+      admin_password_hash: ${ADMIN_PASSWORD_HASH}
+
+logging:
+  level:
+    cz.palo.autoservis: INFO
+    org.mybatis: WARN
+    org.flywaydb: INFO
+    org.springframework.security: WARN
+    org.springframework.security.web.authentication.dao.AbstractUserDetails.DaoAuthenticationProvider: WARN
+
+jwt:
+  expiration: 900000   # 15 minut, jak už bylo naplánováno v komentáři
+  cookie-secure: ${JWT_COOKIE_SECURE:true} # true = bezpečný default; přebít v .env jen tam, kde chybí TLS
+
+# Skutečná doména frontendu; víc originů oddělit čárkou. Prázdné = žádný cross-origin
+# (FE servírovaný ze stejného originu jako API CORS nepotřebuje).
+cors:
+  allowed-origins: ${CORS_ALLOWED_ORIGINS:}

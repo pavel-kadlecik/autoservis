@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+
+<!--
+    AddressMapper.xml — SQL pro cz.palo.autoservis.mapper.AddressMapper
+    Tabulka: customer.addresses (vždy plně kvalifikovaná dle konvence projektu)
+    Na AddressResultMap se odkazuje CustomerMapper (columnPrefix="addr_").
+-->
+<mapper namespace="cz.palo.autoservis.mapper.AddressMapper">
+
+    <resultMap id="AddressResultMap" type="Address">
+        <id     column="id"            property="id"          javaType="long"/>
+        <result column="customer_id"   property="customerId"  javaType="long"/>
+        <result column="address_type"  property="addressType"
+                typeHandler="cz.palo.autoservis.config.mybatis.PgEnumTypeHandler$AddressTypeHandler"/>
+        <result column="is_default"    property="default"/>
+        <result column="street"        property="street"/>
+        <result column="street_number" property="streetNumber"/>
+        <result column="city"          property="city"/>
+        <result column="postal_code"   property="postalCode"/>
+        <result column="country_code"  property="countryCode"/>
+        <result column="created_at"    property="createdAt"   javaType="java.time.OffsetDateTime"/>
+        <result column="updated_at"    property="updatedAt"   javaType="java.time.OffsetDateTime"/>
+    </resultMap>
+
+    <select id="findById" resultMap="AddressResultMap">
+        SELECT * FROM customer.addresses
+        WHERE id = #{id}
+    </select>
+
+    <insert id="insert" useGeneratedKeys="true" keyProperty="address.id" keyColumn="id">
+        INSERT INTO customer.addresses
+            (customer_id, address_type, is_default, street, street_number, city, postal_code, country_code)
+        VALUES (
+            #{address.customerId},
+            #{address.addressType,
+              typeHandler=cz.palo.autoservis.config.mybatis.PgEnumTypeHandler$AddressTypeHandler}:: customer.address_type,
+            #{address.default},
+            #{address.street},
+            #{address.streetNumber},
+            #{address.city},
+            #{address.postalCode},
+            #{address.countryCode}
+        )
+    </insert>
+
+    <delete id="deleteByCustomerId">
+        DELETE FROM customer.addresses WHERE customer_id = #{customerId}
+    </delete>
+
+</mapper>

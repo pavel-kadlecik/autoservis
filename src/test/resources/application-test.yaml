@@ -1,0 +1,23 @@
+# =============================================================================
+# application-test.yaml — konfigurace pro testovací profil (E4.1 / audit V1)
+#
+# Testovací suita dřív spoléhala na env proměnné JWT_SECRET / ANTHROPIC_API_KEY
+# (přes ${...} v application.yaml), takže na čistém clone / CI bez těchto proměnných
+# vůbec nenaběhl kontext a s ním všech ~740 testů. Tento profil (aktivovaný v
+# AbstractIntegrationTest přes @ActiveProfiles("test")) dodává neškodné testovací
+# hodnoty, takže suita potřebuje jen běžící Docker — nic z prostředí.
+#
+# Datasource NEnastavujeme: přepisuje ho @DynamicPropertySource z Testcontainers.
+# =============================================================================
+
+jwt:
+  # Base64 (dekóduje se přes Decoders.BASE64) → 48 bajtů, dost pro HS256. NENÍ tajné,
+  # slouží jen k podpisu tokenů v testech.
+  secret: YXV0b3NlcnZpcy10ZXN0LWp3dC1zZWNyZXQta2V5LTAxMjM0NTY3ODktYWJjZGVm
+
+spring:
+  ai:
+    anthropic:
+      # Dummy klíč — extrakční službu testy mockují (@MockitoBean), reálné volání se nekoná.
+      # Přítomnost hodnoty jen zabrání selhání resolveru ${ANTHROPIC_API_KEY} při startu kontextu.
+      api-key: test-anthropic-key-not-used

@@ -1,0 +1,50 @@
+19.06.2026
+
+**************MODUL Vozidla**************
+
+Editace vozidla
+*Autocomplete placehoder nezobrazuje číslo zákazníka.
+
+*Placeholder - popis výhledávní prodle čeho ? VIN, značka....
+*Popřemýšlet co je ještě editace vozidla(historie atd....) a s tím související editace hodnoty najeto
+	*samostastná tabulka historie vozidla, datum a ujeté kilometry s odkazem na id vozidla
+
+*******************************************
+
+**************MODUL Zákazník**************
+*Seznam vozidel na detailu zákazníka
+*Po deaktivaci zákazníka -> vozidla musí být také neaktivní (Půjde deaktivovat ? Má otevřenou zakázku ? Vyřešit vše, co pod zákazníkem je )
+
+*******************************************
+
+**************MODUL Zakázky**************
+Položky zakázek, chybí cena s DPH v tabulce přehledu položek a suma celková cena
+Vazební tabulka + nová tabulka pro objednávky dílů (seznam dílů)
+
+*Zvážit použití položek ze skladu, ve skladu by mělo být evidována položka po položce (objednávka -> sklad, vrakoviště -> sklad)
+Zakázka by se odkazovala na položku skladu. Jestli je ta položka volná, nebo není volná, blokace položky
+
+
+Nákupní cena položek zakázky disable pro nerelevatní.
+Dynamický formulář při zadávání položek, práce -> pneuservis, servis
+
+Selectbox pro jednotky položek (kg,ks, litr)
+Čísleník pro sazby DPH (nová tabulka)
+Obecně popřemýšlet naco použít číselníky.
+
+Při editaci položky napříkad podbarvit řádek práve editovalné položky
+
+****************************************************************************************************************************************************************************
+
+26.06.2026
+
+**************MODUL Zakázky**************
+Filtrování zakázek jen nedokončené
+Řazení podle termínu dokončení
+Řazení podle sloupců, případně více sloupců.
+*******************************************
+
+**************MODUL Zakázky**************
+Přidat input do editace a create nakupní ceny produktu.
+Vyjasnist vyznam isActive v tabulce produkty
+*******************************************

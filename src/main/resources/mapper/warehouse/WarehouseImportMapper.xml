@@ -1,0 +1,177 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="cz.palo.autoservis.mapper.WarehouseImportMapper">
+
+    <!-- ===================== DODAVATEL ===================== -->
+    <!-- Párování při kontrole draftu: na deaktivovaného dodavatele se NEnapáruje záměrně —
+         auto-match na vyřazenou firmu by byl horší než přiznat, že shoda není. -->
+    <select id="findSupplierIdByIco" resultType="long">
+        SELECT id FROM warehouse.suppliers WHERE registration_number = #{ico} AND is_active = TRUE
+    </select>
+
+    <!-- Protikus k dotazu výše, používaný až při potvrzení (audit KN-16). Unikát
+         `uq_suppliers_registration_number` (V18/V30) platí bez ohledu na is_active, takže
+         bez téhle kontroly by insert deaktivovaného IČO spadl na porušení UNIQUE a uživatel
+         by dostal neinformativní 422 „Data se nepodařilo uložit". -->
+    <select id="findInactiveSupplierIdByIco" resultType="long">
+        SELECT id FROM warehouse.suppliers WHERE registration_number = #{ico} AND is_active = FALSE
+    </select>
+
+    <insert id="insertSupplier" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO warehouse.suppliers
+        (name, registration_number, vat_id, street, city, postal_code, bank_account, iban, swift, email, phone)
+        VALUES
+        (#{name}, #{registrationNumber}, #{vatId}, #{street}, #{city}, #{postalCode},
+        #{bankAccount}, #{iban}, #{swift}, #{email}, #{phone})
+    </insert>
+
+    <!-- ===================== PŘÍJEMKA ===================== -->
+    <!-- idempotence importu: REJECTED i CANCELLED doklady číslo uvolňují
+         (partial unique index V39, rozšířený ve V43) -->
+    <select id="existsActiveDocument" resultType="boolean">
+        SELECT EXISTS(
+        SELECT 1 FROM warehouse.goods_receipts
+        WHERE supplier_id = #{supplierId}
+        AND invoice_number = #{documentNumber}
+        AND status NOT IN ('REJECTED', 'CANCELLED')
+        <if test="excludeReceiptId != null">
+            AND id != #{excludeReceiptId}
+        </if>
+        )
+    </select>
+
+    <!--
+        Idempotence u dokladu BEZ čitelného IČO (audit KN-4b). `existsActiveDocument` se ptá
+        podle supplier_id, jenže dodavatel bez IČO se při každém potvrzení zakládá znovu (unikát
+        na registration_number víc NULL hodnot povoluje) — nový dodavatel žádný dřívější doklad
+        nemá, takže dedup neměl s čím porovnávat a týž ručně psaný dodací list šel naskladnit
+        opakovaně. Porovnáváme proto podle jména ze snapshotu příjemky, které je uložené
+        nezávisle na tom, kolik dodavatelských karet mezitím vzniklo.
+
+        Jméno se srovnává case-insensitive a bez okrajových mezer. Záměrně se NEporovnává jen
+        podle čísla dokladu — čísla typu „2026001" používá víc firem a plané odmítnutí
+        legitimního dokladu by bylo horší než tenhle úzký dedup.
+    -->
+    <select id="existsActiveDocumentBySupplierName" resultType="boolean">
+        SELECT EXISTS(
+        SELECT 1 FROM warehouse.goods_receipts
+        WHERE invoice_number = #{documentNumber}
+        AND LOWER(TRIM(supplier_name_snapshot)) = LOWER(TRIM(#{supplierName}))
+        AND status NOT IN ('REJECTED', 'CANCELLED')
+        <if test="excludeReceiptId != null">
+            AND id != #{excludeReceiptId}
+        </if>
+        )
+    </select>
+
+    <insert id="insertReceipt" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO warehouse.goods_receipts
+        (supplier_id, supplier_name_snapshot, invoice_number, order_number, original_order_number,
+        issue_date, due_date, taxable_supply_date,
+        subtotal, vat_amount, total_amount, currency,
+        document_type, source_channel, draft_payload,
+        status, reconciliation_ok, extraction_model, source_filename, source_pdf, created_by)
+        VALUES
+        (#{supplierId}, #{supplierNameSnapshot}, #{invoiceNumber}, #{orderNumber}, #{originalOrderNumber},
+        #{issueDate}, #{dueDate}, #{taxableSupplyDate},
+        #{subtotal}, #{vatAmount}, #{totalAmount}, #{currency},
+        #{documentType, typeHandler=cz.palo.autoservis.config.mybatis.PgEnumTypeHandler$DocumentTypeHandler},
+        #{sourceChannel, typeHandler=cz.palo.autoservis.config.mybatis.PgEnumTypeHandler$ReceiptSourceHandler},
+        CAST(#{draftPayload} AS jsonb),
+        #{status, typeHandler=cz.palo.autoservis.config.mybatis.PgEnumTypeHandler$ReceiptStatusHandler},
+        #{reconciliationOk}, #{extractionModel}, #{sourceFilename}, #{sourcePdf}, #{createdBy})
+    </insert>
+
+    <!-- ===================== PRODUKT ===================== -->
+    <select id="findProductIdBySku" resultType="long">
+        SELECT id FROM warehouse.products WHERE sku = #{sku} AND is_active = TRUE
+    </select>
+
+    <!-- Protikus k dotazu výše (audit KN-16): unikát `uq_products_sku` (V18) platí bez ohledu
+         na is_active, takže bez téhle kontroly by naskladnění na deaktivovanou kartu spadlo
+         na porušení UNIQUE. Zboží fyzicky přišlo → kartu reaktivujeme, viz resolveProduct. -->
+    <select id="findInactiveProductIdBySku" resultType="long">
+        SELECT id FROM warehouse.products WHERE sku = #{sku} AND is_active = FALSE
+    </select>
+
+    <insert id="insertProduct" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO warehouse.products (sku, name, manufacturer_part_number, unit, default_vat_rate)
+        VALUES (#{sku}, #{name}, #{manufacturerPartNumber}, #{unit}, #{defaultVatRate})
+    </insert>
+
+    <!-- ===================== ŠARŽE (řádek příjemky) ===================== -->
+    <insert id="insertReceiptItem" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO warehouse.goods_receipt_items
+        (goods_receipt_id, product_id, position, name_snapshot,
+        quantity_received, quantity_remaining, unit_price_excl_vat, vat_rate, total_incl_vat)
+        VALUES
+        (#{goodsReceiptId}, #{productId}, #{position}, #{nameSnapshot},
+        #{quantityReceived}, #{quantityRemaining}, #{unitPriceExclVat}, #{vatRate}, #{totalInclVat})
+    </insert>
+
+    <!-- ===================== DL REFERENCE (dedup DL ↔ faktura) ===================== -->
+    <select id="findDeliveryNoteReceiptId" resultType="long">
+        SELECT gr.id
+        FROM warehouse.goods_receipts gr
+        WHERE gr.document_type = 'DELIVERY_NOTE'
+        AND gr.invoice_number = #{number}
+        AND gr.status NOT IN ('REJECTED', 'CANCELLED')
+        <if test="supplierId != null">
+            AND gr.supplier_id = #{supplierId}
+        </if>
+        <if test="excludeReceiptId != null">
+            AND gr.id != #{excludeReceiptId}
+        </if>
+        ORDER BY gr.id
+        LIMIT 1
+    </select>
+
+    <insert id="upsertDeliveryNoteRef">
+        INSERT INTO warehouse.receipt_delivery_note_refs
+            (goods_receipt_id, delivery_note_number, matched_receipt_id, resolution)
+        VALUES
+            (#{goodsReceiptId}, #{number}, #{matchedReceiptId},
+             CAST(#{resolution} AS warehouse.dn_ref_resolution))
+        ON CONFLICT (goods_receipt_id, delivery_note_number) DO UPDATE
+        SET matched_receipt_id = EXCLUDED.matched_receipt_id,
+            resolution         = EXCLUDED.resolution
+    </insert>
+
+    <!-- ===================== POHYB ===================== -->
+    <!-- trigger trg_apply_stock_movement po vložení sám upraví stav skladu i šarže -->
+    <insert id="insertMovement" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO warehouse.stock_movements
+        (product_id, batch_id, movement_type, quantity, order_id, order_item_id, return_reason, credit_note_number, note, created_by)
+        VALUES
+        (#{productId}, #{batchId},
+        #{movementType, typeHandler=cz.palo.autoservis.config.mybatis.PgEnumTypeHandler$MovementTypeHandler},
+        #{quantity}, #{orderId}, #{orderItemId},
+        #{returnReason, typeHandler=cz.palo.autoservis.config.mybatis.PgEnumTypeHandler$ReturnReasonHandler},
+        #{creditNoteNumber}, #{note}, #{createdBy})
+    </insert>
+
+    <!--
+        Kolik z položky zakázky je právě teď fyzicky mimo sklad.
+
+        Součet znaménkových množství všech pohybů té položky, obrácený do kladné hodnoty:
+        ISSUE je záporný, ISSUE_RETURN kladný, takže výsledek sám odečte, co se už vrátilo.
+        Nula = položka je jen rezervovaná (nebo už vrácená), kladné číslo = tolik drží u sebe.
+
+        Díky tomu vyjde správně i částečné vrácení a znovuotevření zakázky, které výdej ruší —
+        stačí se zeptat na tohle číslo, nic se nemusí dopočítávat z historie.
+    -->
+    <select id="findIssuedQuantityByOrderItemId" resultType="java.math.BigDecimal">
+        SELECT COALESCE(-SUM(m.quantity), 0)
+          FROM warehouse.stock_movements m
+         WHERE m.order_item_id = #{orderItemId}
+    </select>
+
+    <!--
+        Kolik skladových pohybů kdy vzniklo ze zakázky. Rozhoduje o tom, jestli ji lze
+        smazat (V84): pouhá rezervace pohyb nemá, vydaný materiál ano.
+    -->
+    <select id="countMovementsByOrderId" resultType="int">
+        SELECT COUNT(*) FROM warehouse.stock_movements WHERE order_id = #{orderId}
+    </select>
+</mapper>

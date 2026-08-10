@@ -1,0 +1,38 @@
+spring:
+  datasource:
+    url: jdbc:postgresql://localhost:5432/autoservis
+    username: postgres
+    password: your_password_here
+
+  # POVINNÉ i pro běh bez AI importu: application.yaml má ${ANTHROPIC_API_KEY}
+  # bez defaultu, takže bez hodnoty aplikace vůbec nenastartuje (selže resolver
+  # při startu kontextu). Pro vyzkoušení bez AI importu faktur stačí libovolná
+  # dummy hodnota; reálný klíč vydává https://console.anthropic.com.
+  ai:
+    anthropic:
+      api-key: sk-ant-dummy-nahradte-realnym-klicem
+
+  # Odesílání faktur e-mailem — účet na Seznamu: celá adresa + „aplikační
+  # heslo" (Zabezpečení účtu → Dvoufázové ověření → Aplikační heslo; platí jen
+  # pro IMAP/SMTP a přežije změnu přihlašovacího hesla). Bez vyplnění aplikace
+  # funguje, jen odeslání e-mailu vrátí chybu.
+  mail:
+    username: vas-email@seznam.cz
+    password: aplikacni_heslo
+
+jwt:
+  # Nový klíč vygeneruješ příkazem:  openssl rand -base64 48
+  secret: your-min-256bit-secret-here
+  expiration: 900000
+  refresh-expiration: 604800000
+
+logging:
+  level:
+    cz.palo.autoservis: DEBUG
+    org.mybatis: DEBUG
+    org.springframework.security: DEBUG
+
+registry:
+  dataovozidlech:
+    # Registrace klíče: https://dataovozidlech.cz/registraceapi
+    api-key: ${DATAOVOZIDLECH_API_KEY}

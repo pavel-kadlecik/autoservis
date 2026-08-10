@@ -1,0 +1,394 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+
+<!--
+    CustomerMapper.xml — SQL pro cz.palo.autoservis.mapper.CustomerMapper
+    Tabulka: customer.customers (vždy plně kvalifikovaná dle konvence projektu)
+-->
+<mapper namespace="cz.palo.autoservis.mapper.CustomerMapper">
+
+    <!-- =========================================================
+         Result maps
+         ========================================================= -->
+
+    <!-- Base map: flat customer row, no nested objects. -->
+    <resultMap id="CustomerBaseResultMap" type="Customer">
+        <id     column="id"              property="id"              javaType="long"/>
+        <result column="user_id"         property="userId"          javaType="long"/>
+        <result column="customer_type"   property="customerType"
+                typeHandler="cz.palo.autoservis.config.mybatis.PgEnumTypeHandler$CustomerTypeHandler"/>
+        <result column="customer_number" property="customerNumber"/>
+        <result column="first_name"      property="firstName"/>
+        <result column="last_name"       property="lastName"/>
+        <result column="birth_date"      property="birthDate"       javaType="java.time.LocalDate"/>
+        <result column="company_name"    property="companyName"/>
+        <result column="ico"             property="ico"/>
+        <result column="dic"             property="dic"/>
+        <result column="legal_form"      property="legalForm"/>
+        <result column="primary_email"   property="primaryEmail"/>
+        <result column="primary_phone"   property="primaryPhone"/>
+        <result column="marketing_consent"    property="marketingConsent"/>
+        <result column="marketing_consent_at" property="marketingConsentAt" javaType="java.time.OffsetDateTime"/>
+        <result column="gdpr_consent"         property="gdprConsent"/>
+        <result column="gdpr_consent_at"      property="gdprConsentAt"      javaType="java.time.OffsetDateTime"/>
+        <result column="preferred_contact_channel" property="preferredContactChannel"
+                typeHandler="cz.palo.autoservis.config.mybatis.PgEnumTypeHandler$ContactChannelHandler"/>
+        <result column="internal_note"   property="internalNote"/>
+        <result column="loyalty_points"  property="loyaltyPoints"/>
+        <result column="is_active"       property="active"/>
+        <result column="created_at"      property="createdAt"       javaType="java.time.OffsetDateTime"/>
+        <result column="updated_at"      property="updatedAt"       javaType="java.time.OffsetDateTime"/>
+        <result column="created_by"      property="createdBy"       javaType="long"/>
+    </resultMap>
+
+    <!-- Plná mapa: zákazník s vnořenými adresami, kontaktními osobami a vozidly. -->
+    <resultMap id="CustomerFullResultMap" type="Customer" extends="CustomerBaseResultMap">
+        <collection property="addresses"      ofType="Address"
+                    resultMap="cz.palo.autoservis.mapper.AddressMapper.AddressResultMap"
+                    columnPrefix="addr_"/>
+        <collection property="contactPersons" ofType="ContactPerson"
+                    resultMap="cz.palo.autoservis.mapper.ContactPersonMapper.ContactPersonResultMap"
+                    columnPrefix="cp_"/>
+        <collection property="vehicles" ofType="cz.palo.autoservis.model.domain.vehicle.Vehicle"
+                    resultMap="cz.palo.autoservis.mapper.VehicleMapper.VehicleResultMap"
+                    columnPrefix="v_"/>
+    </resultMap>
+
+    <!-- Embedded map: used as an association inside VehicleResultMap. -->
+    <resultMap id="CustomerEmbeddedResultMap" type="Customer">
+        <id     column="customer_id"     property="id"            javaType="long"/>
+        <result column="customer_type"   property="customerType"
+                typeHandler="cz.palo.autoservis.config.mybatis.PgEnumTypeHandler$CustomerTypeHandler"/>
+        <result column="customer_number" property="customerNumber"/>
+        <result column="first_name"      property="firstName"/>
+        <result column="last_name"       property="lastName"/>
+        <result column="company_name"    property="companyName"/>
+        <result column="primary_email"   property="primaryEmail"/>
+        <result column="primary_phone"   property="primaryPhone"/>
+        <result column="loyalty_points"  property="loyaltyPoints"/>
+        <result column="is_active"       property="active"/>
+        <result column="created_at"      property="createdAt"     javaType="java.time.OffsetDateTime"/>
+    </resultMap>
+
+    <!-- =========================================================
+         Reusable SQL fragments
+         ========================================================= -->
+
+    <sql id="customerColumns">
+        c.id, c.user_id, c.customer_type, c.customer_number,
+        c.first_name, c.last_name, c.birth_date,
+        c.company_name, c.ico, c.dic, c.legal_form,
+        c.primary_email, c.primary_phone,
+        c.marketing_consent, c.marketing_consent_at,
+        c.gdpr_consent, c.gdpr_consent_at,
+        c.preferred_contact_channel, c.internal_note,
+        c.loyalty_points, c.is_active,
+        c.created_at, c.updated_at, c.created_by
+    </sql>
+
+    <!--
+        Sloupce zákazníka aliasované prefixem cust_ pro vnoření do VehicleResultMap
+        (association columnPrefix="cust_", TD-56). Bez aliasu by c.is_active a c.created_at
+        v JOIN dotazu kolidovaly se stejnojmennými sloupci vozidla a CustomerEmbeddedResultMap
+        by načetl stav vozidla místo majitele („duchový zákazník"). Obsahuje jen sloupce, které
+        CustomerEmbeddedResultMap skutečně mapuje.
+    -->
+    <sql id="customerColumnsForVehicle">
+        c.id              AS cust_customer_id,
+        c.customer_type   AS cust_customer_type,
+        c.customer_number AS cust_customer_number,
+        c.first_name      AS cust_first_name,
+        c.last_name       AS cust_last_name,
+        c.company_name    AS cust_company_name,
+        c.primary_email   AS cust_primary_email,
+        c.primary_phone   AS cust_primary_phone,
+        c.loyalty_points  AS cust_loyalty_points,
+        c.is_active       AS cust_is_active,
+        c.created_at      AS cust_created_at
+    </sql>
+
+    <sql id="addressColumns">
+        a.id            AS addr_id,
+        a.customer_id   AS addr_customer_id,
+        a.address_type  AS addr_address_type,
+        a.is_default    AS addr_is_default,
+        a.street        AS addr_street,
+        a.street_number AS addr_street_number,
+        a.city          AS addr_city,
+        a.postal_code   AS addr_postal_code,
+        a.country_code  AS addr_country_code
+    </sql>
+
+    <sql id="contactPersonColumns">
+        cp.id           AS cp_id,
+        cp.customer_id  AS cp_customer_id,
+        cp.first_name   AS cp_first_name,
+        cp.last_name    AS cp_last_name,
+        cp.position     AS cp_position,
+        cp.email        AS cp_email,
+        cp.phone        AS cp_phone,
+        cp.is_primary   AS cp_is_primary,
+        cp.is_active    AS cp_is_active
+    </sql>
+
+    <sql id="vehicleColumns">
+        v.id                      AS v_id,
+        v.customer_id             AS v_customer_id,
+        v.vin                     AS v_vin,
+        v.license_plate           AS v_license_plate,
+        v.brand                   AS v_brand,
+        v.model                   AS v_model,
+        v.year_of_manufacture     AS v_year_of_manufacture,
+        v.first_registration_date AS v_first_registration_date,
+        v.fuel_type               AS v_fuel_type,
+        v.transmission            AS v_transmission,
+        v.engine_displacement_ccm AS v_engine_displacement_ccm,
+        v.engine_power_kw         AS v_engine_power_kw,
+        v.color                   AS v_color,
+        v.current_mileage_km      AS v_current_mileage_km,
+        v.internal_note           AS v_internal_note,
+        v.is_active               AS v_is_active,
+        v.created_at              AS v_created_at,
+        v.updated_at              AS v_updated_at,
+        v.created_by              AS v_created_by
+    </sql>
+
+    <!-- Dynamická WHERE klauzule sdílená search a countSearch. -->
+    <sql id="searchWhere">
+        <where>
+            <if test="params.activeOnly">
+                c.is_active = true
+            </if>
+            <!-- Každý token musí sedět aspoň na jeden sloupec (OR), všechny tokeny musí
+                 sedět (AND napříč iteracemi foreach) — „Jan Novák" najde first_name=Jan
+                 + last_name=Novák.
+                 POZOR: záměrně BEZ <bind> — <bind> uvnitř <foreach> se váže jednou na
+                 jméno iterace, ne na její instanci, takže každý placeholder skončí
+                 s hodnotou POSLEDNÍHO tokenu (ověřeno: řádky seděly jen na poslední
+                 slovo). #{token} (samotný item foreach) MyBatis převazuje bezpečně
+                 v každé iteraci, proto se LIKE wildcard staví CONCATem přímo v SQL. -->
+            <if test="params.searchTokens != null and !params.searchTokens.isEmpty()">
+                AND
+                <foreach item="token" collection="params.searchTokens" open="(" separator=" AND " close=")">
+                    (LOWER(public.unaccent(c.first_name))      LIKE CONCAT('%', LOWER(public.unaccent(#{token})), '%')
+                     OR LOWER(public.unaccent(c.last_name))    LIKE CONCAT('%', LOWER(public.unaccent(#{token})), '%')
+                     OR LOWER(public.unaccent(c.company_name)) LIKE CONCAT('%', LOWER(public.unaccent(#{token})), '%'))
+                </foreach>
+            </if>
+        </where>
+    </sql>
+
+    <!-- =========================================================
+         Queries
+         ========================================================= -->
+
+    <!-- Plný detail zákazníka včetně adres, kontaktních osob a vozidel.
+         ZÁMĚRNĚ benevolentní (bez filtru is_active): detailová stránka otevírá
+         i deaktivované zákazníky (CustomersPageDetail je načítá, např. kvůli
+         reaktivaci). NEPŘIDÁVAT sem "AND c.is_active = TRUE" — getById() by pro
+         neaktivní vracel 404, rozbila by se detailová stránka i fetchOrFail
+         po deaktivaci. -->
+    <select id="findById" resultMap="CustomerFullResultMap">
+        SELECT
+        <include refid="customerColumns"/>,
+        <include refid="addressColumns"/>,
+        <include refid="contactPersonColumns"/>,
+        <include refid="vehicleColumns"/>
+        FROM customer.customers c
+        LEFT JOIN customer.addresses       a  ON a.customer_id  = c.id
+        LEFT JOIN customer.contact_persons cp ON cp.customer_id = c.id AND cp.is_active = TRUE
+        LEFT JOIN vehicle.vehicles         v  ON v.customer_id  = c.id AND v.is_active  = TRUE
+        WHERE c.id = #{id}
+    </select>
+
+    <!-- Plochý select bez vnořených objektů — pro seznamy. -->
+    <select id="findByIdShallow" resultMap="CustomerBaseResultMap">
+        SELECT <include refid="customerColumns"/>
+        FROM customer.customers c
+        WHERE c.id = #{id}
+    </select>
+
+    <!-- Dynamické hledání se stránkováním. -->
+    <select id="search" resultMap="CustomerBaseResultMap">
+        SELECT <include refid="customerColumns"/>
+        FROM customer.customers c
+        <include refid="searchWhere"/>
+        ORDER BY <include refid="customerSortOrder"/>
+        LIMIT #{params.pageSize} OFFSET #{params.offset}
+    </select>
+
+    <!--
+        Whitelist seřaditelných sloupců. Název sloupce nejde předat přes #{} (je to
+        identifikátor, ne hodnota), takže whitelist je zároveň ochrana proti injection.
+
+        Výchozí řazení je **pojmenovaný klíč** (`createdAt`), ne pevný fragment ve
+        <otherwise>: jinak by default jako jediný ignoroval sortDesc (U3R.1).
+        Default nastavuje CustomerSearchParams, <otherwise> jen deleguje, aby
+        neznámá hodnota spadla na definované chování.
+
+        Sekundární klíč (c.id) je jen tie-breaker pro stabilní stránkování —
+        záměrně bez směru.
+    -->
+    <sql id="customerSortOrder">
+        <choose>
+            <when test="params.sortBy == 'lastName'">
+                c.last_name <if test="params.sortDesc">DESC</if>, c.id <if test="params.sortDesc">DESC</if>
+            </when>
+            <when test="params.sortBy == 'companyName'">
+                c.company_name <if test="params.sortDesc">DESC</if> NULLS LAST, c.id <if test="params.sortDesc">DESC</if>
+            </when>
+            <when test="params.sortBy == 'customerNumber'">
+                c.customer_number <if test="params.sortDesc">DESC</if>, c.id <if test="params.sortDesc">DESC</if>
+            </when>
+            <when test="params.sortBy == 'primaryEmail'">
+                c.primary_email <if test="params.sortDesc">DESC</if> NULLS LAST, c.id <if test="params.sortDesc">DESC</if>
+            </when>
+            <otherwise>
+                c.created_at <if test="params.sortDesc">DESC</if>, c.id <if test="params.sortDesc">DESC</if>
+            </otherwise>
+        </choose>
+    </sql>
+
+    <select id="countSearch" resultType="long">
+        SELECT COUNT(*)
+        FROM customer.customers c
+        <include refid="searchWhere"/>
+    </select>
+
+    <!-- =========================================================
+         Shared INSERT fragments
+         ========================================================= -->
+
+    <sql id="insertCommonColumns">
+        user_id, customer_type,
+        primary_email, primary_phone,
+        marketing_consent, marketing_consent_at,
+        gdpr_consent, gdpr_consent_at,
+        preferred_contact_channel, internal_note,
+        loyalty_points, is_active, created_by
+    </sql>
+
+    <sql id="insertCommonValues">
+        #{userId},
+        #{customerType, typeHandler=cz.palo.autoservis.config.mybatis.PgEnumTypeHandler$CustomerTypeHandler}::customer.customer_type,
+        #{primaryEmail},
+        #{primaryPhone},
+        #{marketingConsent},
+        #{marketingConsentAt},
+        #{gdprConsent},
+        NOW(),
+        #{preferredContactChannel,
+          typeHandler=cz.palo.autoservis.config.mybatis.PgEnumTypeHandler$ContactChannelHandler}::customer.contact_channel,
+        #{internalNote},
+        0,
+        TRUE,
+        #{createdBy}
+    </sql>
+
+    <!-- =========================================================
+         Insert / Update / Deactivate
+         ========================================================= -->
+
+    <insert id="insertIndividual"
+            parameterType="cz.palo.autoservis.model.domain.customer.Customer"
+            useGeneratedKeys="true" keyProperty="id" keyColumn="id">
+        INSERT INTO customer.customers (
+            <include refid="insertCommonColumns"/>,
+            first_name, last_name, birth_date
+        ) VALUES (
+            <include refid="insertCommonValues"/>,
+            #{firstName}, #{lastName}, #{birthDate}
+        )
+    </insert>
+
+    <insert id="insertCompany"
+            parameterType="cz.palo.autoservis.model.domain.customer.Customer"
+            useGeneratedKeys="true" keyProperty="id" keyColumn="id">
+        INSERT INTO customer.customers (
+            <include refid="insertCommonColumns"/>,
+            company_name, ico, dic, legal_form
+        ) VALUES (
+            <include refid="insertCommonValues"/>,
+            #{companyName}, #{ico}, #{dic}, #{legalForm}
+        )
+    </insert>
+
+    <!--
+        Full-replace (sladěno s ostatními moduly, TD-54/E1.1): každé pole se zapíše, i když je null,
+        takže vyplněný údaj lze přes PUT vymazat. „null = ponech" sémantiku pro souhlasy řeší
+        CustomerConverter.applyUpdate (TD-23) — do mapperu už dorazí sloučená hodnota z DB.
+        NOT NULL sloupce (first_name/last_name volitelné dle typu, company_name…) hlídá validace/DB.
+        Časová razítka souhlasů se posunou JEN při skutečné změně hodnoty (E1.1/K-4) — jinak by se
+        datum udělení souhlasu přepsalo při každé editaci zákazníka.
+    -->
+    <update id="update" parameterType="cz.palo.autoservis.model.domain.customer.Customer">
+        UPDATE customer.customers
+        SET first_name                = #{firstName},
+            last_name                 = #{lastName},
+            birth_date                = #{birthDate},
+            company_name              = #{companyName},
+            ico                       = #{ico},
+            dic                       = #{dic},
+            legal_form                = #{legalForm},
+            primary_email             = #{primaryEmail},
+            primary_phone             = #{primaryPhone},
+            gdpr_consent              = #{gdprConsent},
+            gdpr_consent_at           = CASE WHEN gdpr_consent IS DISTINCT FROM #{gdprConsent}
+                                            THEN NOW() ELSE gdpr_consent_at END,
+            marketing_consent         = #{marketingConsent},
+            marketing_consent_at      = CASE WHEN marketing_consent IS DISTINCT FROM #{marketingConsent}
+                                            THEN NOW() ELSE marketing_consent_at END,
+            preferred_contact_channel = #{preferredContactChannel,
+                typeHandler=cz.palo.autoservis.config.mybatis.PgEnumTypeHandler$ContactChannelHandler}::customer.contact_channel,
+            internal_note             = #{internalNote}
+        WHERE id = #{id}
+    </update>
+
+    <update id="deactivate">
+        UPDATE customer.customers SET is_active = FALSE WHERE id = #{id}
+    </update>
+
+    <update id="activate">
+        UPDATE customer.customers SET is_active = TRUE WHERE id = #{id}
+    </update>
+
+    <!-- =========================================================
+         Existence checks
+         ========================================================= -->
+
+    <select id="existsByIco" resultType="boolean">
+        SELECT EXISTS(SELECT 1 FROM customer.customers WHERE ico = #{ico})
+    </select>
+
+    <select id="existsById" resultType="boolean">
+        SELECT EXISTS(SELECT 1 FROM customer.customers WHERE id = #{id})
+    </select>
+
+    <!-- =========================================================
+         Autocomplete
+         ========================================================= -->
+
+    <select id="autocomplete" resultType="cz.palo.autoservis.model.dto.autocomplete.AutocompleteItem">
+        SELECT id, customer_number AS description,
+            CASE
+                WHEN company_name IS NOT NULL THEN company_name
+                ELSE first_name || ' ' || last_name
+            END AS value
+        FROM customer.customers
+        <where>
+            <!-- Autocomplete je vstup pro zakládání zakázky/vozidla — deaktivovaný zákazník
+                 se nesmí nabízet (E3.3), jinak by na něj šlo založit zakázku. -->
+            is_active = TRUE
+            <if test="params.normalizedQuery() != ''">
+                <bind name="searchLike" value="'%' + params.normalizedQuery() + '%'" />
+                AND CASE
+                    WHEN company_name IS NOT NULL THEN LOWER(company_name) LIKE LOWER(#{searchLike})
+                    ELSE LOWER(first_name || ' ' || last_name) LIKE LOWER(#{searchLike})
+                END
+            </if>
+        </where>
+        LIMIT #{params.effectiveLimit} + 1 OFFSET 0
+    </select>
+
+</mapper>

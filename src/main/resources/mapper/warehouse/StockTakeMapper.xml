@@ -1,0 +1,222 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+
+<!--
+    StockTakeMapper.xml — SQL pro inventuru (V44).
+    Tabulky vždy plně kvalifikované. Aliasy v camelCase, ať mapování nezávisí
+    na map-underscore-to-camel-case (stejně jako WarehouseMapper.xml).
+-->
+<mapper namespace="cz.palo.autoservis.mapper.StockTakeMapper">
+
+    <resultMap id="StockTakeResultMap" type="cz.palo.autoservis.model.domain.warehouse.StockTake">
+        <id     property="id"               column="id"/>
+        <result property="stockTakeNumber"  column="stock_take_number"/>
+        <result property="status"           column="status"/>
+        <result property="note"             column="note"/>
+        <result property="openedAt"         column="opened_at"/>
+        <result property="openedBy"         column="opened_by"/>
+        <result property="closedAt"         column="closed_at"/>
+        <result property="closedBy"         column="closed_by"/>
+        <result property="surplusReceiptId" column="surplus_receipt_id"/>
+        <result property="createdAt"        column="created_at"/>
+        <result property="updatedAt"        column="updated_at"/>
+    </resultMap>
+
+    <insert id="insert" parameterType="cz.palo.autoservis.model.domain.warehouse.StockTake"
+            useGeneratedKeys="true" keyProperty="id" keyColumn="id">
+        INSERT INTO warehouse.stock_takes (note, opened_by)
+        VALUES (#{note}, #{openedBy})
+    </insert>
+
+    <select id="findById" resultMap="StockTakeResultMap">
+        SELECT id, stock_take_number, status, note, opened_at, opened_by, closed_at, closed_by,
+               surplus_receipt_id, created_at, updated_at
+        FROM warehouse.stock_takes
+        WHERE id = #{id}
+    </select>
+
+    <!--
+        Whitelist seřaditelných sloupců (vzor OrderMapper). Výchozí řazení
+        (openedAt sestupně, nejnovější první) patří do StockTakeSearchParams,
+        ne do <otherwise> zde.
+    -->
+    <sql id="stockTakeSortOrder">
+        <choose>
+            <when test="params.sortBy == 'stockTakeNumber'">
+                stock_take_number <if test="params.sortDesc">DESC</if>, id <if test="params.sortDesc">DESC</if>
+            </when>
+            <when test="params.sortBy == 'status'">
+                status::text <if test="params.sortDesc">DESC</if>, id <if test="params.sortDesc">DESC</if>
+            </when>
+            <when test="params.sortBy == 'closedAt'">
+                closed_at <if test="params.sortDesc">DESC</if> NULLS LAST, id <if test="params.sortDesc">DESC</if>
+            </when>
+            <when test="params.sortBy == 'note'">
+                note <if test="params.sortDesc">DESC</if> NULLS LAST, id <if test="params.sortDesc">DESC</if>
+            </when>
+            <otherwise>
+                opened_at <if test="params.sortDesc">DESC</if>, id <if test="params.sortDesc">DESC</if>
+            </otherwise>
+        </choose>
+    </sql>
+
+    <!-- Sdílený filtr pro search i countSearch: fulltext (číslo + poznámka) a stav. -->
+    <sql id="searchWhere">
+        <where>
+            <if test="params.search != null and params.search != ''">
+                <bind name="searchLike" value="'%' + params.search + '%'"/>
+                AND (
+                    LOWER(stock_take_number) LIKE LOWER(#{searchLike})
+                    OR LOWER(note)           LIKE LOWER(#{searchLike})
+                )
+            </if>
+            <if test="params.status != null">
+                AND status = #{params.status, typeHandler=cz.palo.autoservis.config.mybatis.PgEnumTypeHandler$StockTakeStatusHandler}
+            </if>
+        </where>
+    </sql>
+
+    <select id="search" resultType="cz.palo.autoservis.model.dto.warehouse.StockTakeDto$ListResponse">
+        SELECT stock_take_number AS stockTakeNumber,
+               id                AS id,
+               status            AS status,
+               note              AS note,
+               opened_at         AS openedAt,
+               closed_at         AS closedAt
+        FROM warehouse.stock_takes
+        <include refid="searchWhere"/>
+        ORDER BY <include refid="stockTakeSortOrder"/>
+        LIMIT #{params.pageSize} OFFSET #{params.offset}
+    </select>
+
+    <select id="countSearch" resultType="java.lang.Long">
+        SELECT COUNT(*) FROM warehouse.stock_takes
+        <include refid="searchWhere"/>
+    </select>
+
+    <select id="findOpenId" resultType="java.lang.Long">
+        SELECT id FROM warehouse.stock_takes WHERE status = 'OPEN'
+    </select>
+
+    <!--
+        Snapshot soupisu: všechny aktivní produkty. Cena přebytku se předvyplní
+        z nejnovější šarže dílu (LATERAL) — u dílu bez šarže zůstane NULL
+        a uživatel ji musí doplnit, jinak uzavření přebytek odmítne.
+    -->
+    <insert id="snapshotActiveProducts">
+        INSERT INTO warehouse.stock_take_items
+            (stock_take_id, product_id, expected_quantity, surplus_unit_price)
+        SELECT #{stockTakeId}, p.id, p.quantity_on_hand, last_batch.unit_price_excl_vat
+        FROM warehouse.products p
+        LEFT JOIN LATERAL (
+            SELECT gri.unit_price_excl_vat
+            FROM warehouse.goods_receipt_items gri
+            WHERE gri.product_id = p.id
+            ORDER BY gri.id DESC
+            LIMIT 1
+        ) AS last_batch ON TRUE
+        WHERE p.is_active = TRUE
+    </insert>
+
+    <!--
+        Zmrazí rozdíly do sloupců `closed_*` (V65, audit KN-2). Volá se při uzavření,
+        POVINNĚ PŘED zápisem korekčních pohybů: ty srovnají `quantity_on_hand` na napočítané
+        množství, takže po nich už není z čeho rozdíl spočítat a inventura by vykázala samé nuly.
+
+        Řádky bez napočítaného množství se přeskakují — „nepočítáno" není nula (R-H) a nesmí
+        se z něj stát doložený nulový rozdíl.
+    -->
+    <update id="materializeDifferences">
+        UPDATE warehouse.stock_take_items sti
+        SET closed_expected_quantity = p.quantity_on_hand,
+            closed_difference        = sti.counted_quantity - p.quantity_on_hand
+        FROM warehouse.products p
+        WHERE p.id = sti.product_id
+          AND sti.stock_take_id = #{stockTakeId}
+          AND sti.counted_quantity IS NOT NULL
+    </update>
+
+    <!--
+        Rozdíl se u OTEVŘENÉ inventury počítá proti AKTUÁLNÍMU stavu, ne proti snapshotu (R-H) —
+        výdej během počítání se nesmí přepsat. U UZAVŘENÉ se čtou zmrazené hodnoty `closed_*`
+        (V65): po zaúčtování korekcí se totiž živý stav rovná napočítanému množství a rozdíl by
+        vyšel všude 0, takže by doklad nedoložil ani jedno manko (audit KN-2).
+
+        COALESCE/CASE drží zpětnou kompatibilitu: inventury uzavřené před V65 mají `closed_*`
+        NULL a spadnou na původní (nulový) výpočet — beze změny chování, viz komentář v migraci.
+    -->
+    <select id="findItems" resultType="cz.palo.autoservis.model.dto.warehouse.StockTakeDto$ItemResponse">
+        SELECT
+            sti.id                 AS id,
+            p.id                   AS productId,
+            p.sku                  AS sku,
+            p.name                 AS name,
+            p.unit                 AS unit,
+            sti.expected_quantity  AS expectedQuantity,
+            COALESCE(sti.closed_expected_quantity, p.quantity_on_hand) AS currentQuantity,
+            sti.counted_quantity   AS countedQuantity,
+            CASE WHEN sti.closed_difference IS NOT NULL THEN sti.closed_difference
+                 WHEN sti.counted_quantity IS NULL      THEN NULL
+                 ELSE sti.counted_quantity - p.quantity_on_hand END AS difference,
+            sti.surplus_unit_price AS surplusUnitPrice
+        FROM warehouse.stock_take_items sti
+        JOIN warehouse.products p ON p.id = sti.product_id
+        WHERE sti.stock_take_id = #{stockTakeId}
+        ORDER BY p.name
+    </select>
+
+    <!--
+        Šarže dílu se zbytkem, FIFO (nejstarší doklad první) a se zámkem.
+        Manko se rozpouští v tomto pořadí (R-A/R-H). FOR UPDATE OF gri zamyká
+        jen šarže, ne joinované příjemky.
+    -->
+    <select id="findBatchesForShortage"
+            resultType="cz.palo.autoservis.model.domain.warehouse.GoodsReceiptItem">
+        SELECT
+            gri.id                  AS id,
+            gri.goods_receipt_id    AS goodsReceiptId,
+            gri.product_id          AS productId,
+            gri.name_snapshot       AS nameSnapshot,
+            gri.quantity_received   AS quantityReceived,
+            gri.quantity_remaining  AS quantityRemaining,
+            gri.unit_price_excl_vat AS unitPriceExclVat,
+            gri.vat_rate            AS vatRate
+        FROM warehouse.goods_receipt_items gri
+        JOIN warehouse.goods_receipts gr ON gr.id = gri.goods_receipt_id
+        WHERE gri.product_id = #{productId}
+        AND gri.quantity_remaining > 0
+        ORDER BY gr.issue_date ASC NULLS LAST, gri.id ASC
+        FOR UPDATE OF gri
+    </select>
+
+    <update id="updateItem">
+        UPDATE warehouse.stock_take_items
+        SET counted_quantity   = #{countedQuantity},
+            surplus_unit_price = #{surplusUnitPrice}
+        WHERE id = #{itemId}
+        AND stock_take_id = #{stockTakeId}
+    </update>
+
+    <!-- Guarded přechody: druhé uzavření/zrušení aktualizuje 0 řádků. -->
+    <update id="close">
+        UPDATE warehouse.stock_takes
+        SET status             = 'CLOSED',
+            closed_at          = NOW(),
+            closed_by          = #{userId},
+            surplus_receipt_id = #{surplusReceiptId},
+            note               = COALESCE(#{note}, note)
+        WHERE id = #{id}
+        AND status = 'OPEN'
+    </update>
+
+    <update id="cancel">
+        UPDATE warehouse.stock_takes
+        SET status    = 'CANCELLED',
+            closed_at = NOW(),
+            closed_by = #{userId}
+        WHERE id = #{id}
+        AND status = 'OPEN'
+    </update>
+
+</mapper>

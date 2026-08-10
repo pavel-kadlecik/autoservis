@@ -1,0 +1,307 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+
+<!--
+    OrderMapper.xml — SQL pro cz.palo.autoservis.mapper.OrderMapper
+    Tabulka: "order".orders (vždy plně kvalifikovaná; název schématu je rezervované slovo a vyžaduje uvozovky)
+-->
+<mapper namespace="cz.palo.autoservis.mapper.OrderMapper">
+
+    <!-- =========================================================
+         Result map
+         ========================================================= -->
+
+    <resultMap id="OrderResultMap" type="cz.palo.autoservis.model.domain.order.Order">
+        <id     property="id"                    column="id"/>
+        <result property="orderNumber"           column="order_number"/>
+        <result property="customerId"            column="customer_id"/>
+        <result property="vehicleId"             column="vehicle_id"/>
+        <result property="customerDisplayName"   column="customer_display_name"/>
+        <result property="vehicleBrand"          column="vehicle_brand"/>
+        <result property="vehicleModel"          column="vehicle_model"/>
+        <result property="vehicleLicensePlate"   column="vehicle_license_plate"/>
+        <result property="vehicleVin"            column="vehicle_vin"/>
+        <result property="status"                column="status"/>
+        <result property="invoiceStatus"         column="invoice_status"/>
+        <result property="invoiceId"             column="invoice_id"/>
+        <result property="description"           column="description"/>
+        <result property="internalNote"          column="internal_note"/>
+        <result property="estimatedCompletionAt" column="estimated_completion_at"/>
+        <result property="completedAt"           column="completed_at"/>
+        <result property="estimatedPrice"        column="estimated_price"/>
+        <result property="finalPrice"            column="final_price"/>
+        <result property="mileageKmAtIntake"     column="mileage_km_at_intake"/>
+        <result property="receivedAt"            column="received_at"/>
+        <!-- is_active se záměrně nemapuje: zakázky nemají soft-delete (ruší se stavem
+             CANCELLED). Sloupec v DB zůstává (vždy TRUE), viz tech-dluhy.md TD-67. -->
+        <result property="createdAt"             column="created_at"/>
+        <result property="updatedAt"             column="updated_at"/>
+        <result property="createdBy"             column="created_by"/>
+    </resultMap>
+
+    <!-- =========================================================
+         Reusable SQL fragments
+         ========================================================= -->
+
+    <sql id="orderColumns">
+        o.id, o.order_number, o.customer_id, o.vehicle_id,
+        o.status, o.description, o.internal_note,
+        o.estimated_completion_at, o.completed_at,
+        o.estimated_price, o.final_price, o.mileage_km_at_intake, o.received_at,
+        o.created_at, o.updated_at, o.created_by
+    </sql>
+
+    <sql id="vehicleColumns">
+        v.brand         AS vehicle_brand,
+        v.model         AS vehicle_model,
+        v.license_plate AS vehicle_license_plate,
+        v.vin           AS vehicle_vin
+    </sql>
+
+    <!-- Zobrazované jméno zákazníka spočítané z diskriminátoru typu. -->
+    <sql id="customerDisplayName">
+        CASE
+            WHEN c.customer_type = 'COMPANY' THEN c.company_name
+            ELSE c.first_name || ' ' || c.last_name
+        END AS customer_display_name
+    </sql>
+
+    <!-- Dynamická WHERE klauzule sdílená search a countSearch. -->
+    <sql id="WhereClause">
+        <where>
+            o.is_active = TRUE
+            <!-- Filtr podle stavů zakázky — VÍCE stavů najednou (prázdné/null = všechny).
+                 Do V84 to byl jediný stav, jenže „ukaž mi rozpracované" znamená čtyři stavy
+                 zároveň a jeden select to neuměl. Sdílený WhereClause platí i pro countSearch,
+                 takže stránkování počítá jen filtrované řádky. -->
+            <if test="params.statuses != null and !params.statuses.isEmpty()">
+                AND o.status IN
+                <foreach collection="params.statuses" item="st" open="(" separator="," close=")">
+                    #{st, typeHandler=cz.palo.autoservis.config.mybatis.PgEnumTypeHandler$OrderStatusHandler}
+                </foreach>
+            </if>
+            <!-- „Po termínu": slíbený termín uplynul a zakázka není uzavřená. Zakázky bez
+                 termínu (NULL) vypadnou samy (NULL < now() není pravda). Analogie faktur (overdue). -->
+            <if test="params.overdue != null and params.overdue">
+                AND o.estimated_completion_at &lt; now()
+                AND o.status NOT IN ('COMPLETED', 'CANCELLED')
+            </if>
+            <!-- Servisní historie vozu a zákazníka (KN-27). Filtruje se přes o.vehicle_id /
+                 o.customer_id, ne přes JOINnuté v/c — vazba je na zakázce a index na ni existuje
+                 (V53 doplnila indexy na FK). -->
+            <if test="params.vehicleId != null">
+                AND o.vehicle_id = #{params.vehicleId}
+            </if>
+            <if test="params.customerId != null">
+                AND o.customer_id = #{params.customerId}
+            </if>
+            <!-- Každý token musí sedět aspoň na jeden sloupec (OR), všechny tokeny musí
+                 sedět (AND napříč iteracemi foreach) — proč se tu používá CONCAT(...)
+                 s itemem #{token} místo <bind>, viz searchWhere v CustomerMapper.xml:
+                 <bind> uvnitř <foreach> se váže jednou na JMÉNO iterace, ne na její
+                 instanci, takže každý placeholder skončí s hodnotou POSLEDNÍHO tokenu. -->
+            <if test="params.searchTokens != null and !params.searchTokens.isEmpty()">
+                AND
+                <foreach item="token" collection="params.searchTokens" open="(" separator=" AND " close=")">
+                    (LOWER(public.unaccent(o.order_number))    LIKE CONCAT('%', LOWER(public.unaccent(#{token})), '%')
+                     OR LOWER(public.unaccent(c.first_name))    LIKE CONCAT('%', LOWER(public.unaccent(#{token})), '%')
+                     OR LOWER(public.unaccent(c.last_name))     LIKE CONCAT('%', LOWER(public.unaccent(#{token})), '%')
+                     OR LOWER(public.unaccent(c.company_name))  LIKE CONCAT('%', LOWER(public.unaccent(#{token})), '%')
+                     OR LOWER(public.unaccent(c.primary_phone)) LIKE CONCAT('%', LOWER(public.unaccent(#{token})), '%')
+                     OR LOWER(public.unaccent(v.vin))           LIKE CONCAT('%', LOWER(public.unaccent(#{token})), '%')
+                     OR LOWER(public.unaccent(v.license_plate)) LIKE CONCAT('%', LOWER(public.unaccent(#{token})), '%')
+                     OR LOWER(public.unaccent(v.brand))         LIKE CONCAT('%', LOWER(public.unaccent(#{token})), '%')
+                     OR LOWER(public.unaccent(v.model))         LIKE CONCAT('%', LOWER(public.unaccent(#{token})), '%')
+                     OR LOWER(public.unaccent(o.description))   LIKE CONCAT('%', LOWER(public.unaccent(#{token})), '%'))
+                </foreach>
+            </if>
+        </where>
+    </sql>
+
+    <!-- =========================================================
+         Insert
+         ========================================================= -->
+
+    <!-- order_number generuje trigger; status má default 'RECEIVED'. -->
+    <insert id="insert"
+            parameterType="cz.palo.autoservis.model.domain.order.Order"
+            useGeneratedKeys="true" keyProperty="id" keyColumn="id">
+        INSERT INTO "order".orders (
+            customer_id, vehicle_id, description, internal_note,
+            estimated_completion_at, estimated_price, mileage_km_at_intake, received_at, created_by
+        ) VALUES (
+            #{customerId}, #{vehicleId}, #{description}, #{internalNote},
+            #{estimatedCompletionAt}, #{estimatedPrice}, #{mileageKmAtIntake}, #{receivedAt}, #{createdBy}
+        )
+    </insert>
+
+    <!-- =========================================================
+         Update
+         ========================================================= -->
+
+    <!-- order_number, created_at a created_by jsou neměnné. -->
+    <!-- Full-replace (sladěno s ostatními moduly, TD-54/E1.1): nullable pole (internal_note,
+         estimated_*, final_price, completed_at) lze přes PUT vymazat. status/description jsou NOT NULL. -->
+    <update id="update" parameterType="cz.palo.autoservis.model.domain.order.Order">
+        UPDATE "order".orders
+        SET status                  = #{status, typeHandler=cz.palo.autoservis.config.mybatis.PgEnumTypeHandler$OrderStatusHandler},
+            description             = #{description},
+            internal_note           = #{internalNote},
+            estimated_completion_at = #{estimatedCompletionAt},
+            estimated_price         = #{estimatedPrice},
+            final_price             = #{finalPrice},
+            completed_at            = #{completedAt},
+            mileage_km_at_intake    = #{mileageKmAtIntake},
+            received_at             = #{receivedAt}
+        WHERE id = #{id}
+    </update>
+
+    <!--
+        Úzká změna stavu — protějšek full-replace `update`. Zapisuje jen to, co se opravdu
+        mění; full-replace by při rychlé změně ze seznamu přepsal popis a ceny hodnotami,
+        které si klient nenačetl (TD-47).
+    -->
+    <update id="updateStatus">
+        UPDATE "order".orders
+        SET status       = #{status, typeHandler=cz.palo.autoservis.config.mybatis.PgEnumTypeHandler$OrderStatusHandler},
+            completed_at = #{completedAt}
+        WHERE id = #{id}
+    </update>
+
+    <!--
+        Tvrdé smazání zakázky (V84) — vyhrazené pro záznam, který nikdy neměl vzniknout.
+        Zakázka, u které k práci nedošlo, se ruší stavem CANCELLED, ne maže.
+
+        Kaskádou odejdou položky (order_items) i odečet tachometru z příjmu
+        (vehicle.mileage_history, V84). Skladový pohyb a faktura mazání blokují cizím
+        klíčem (ON DELETE RESTRICT); service je odmítne dřív, aby obsluha dostala hlášku
+        místo chyby integrity.
+    -->
+    <delete id="delete">
+        DELETE FROM "order".orders
+        WHERE id = #{id}
+    </delete>
+
+    <!-- =========================================================
+         Select
+         ========================================================= -->
+
+    <select id="search" resultMap="OrderResultMap">
+        SELECT
+            <include refid="orderColumns"/>,
+            <include refid="customerDisplayName"/>,
+            <include refid="vehicleColumns"/>,
+            bi.status AS invoice_status,
+            bi.id     AS invoice_id
+        FROM "order".orders AS o
+        LEFT JOIN customer.customers AS c ON c.id = o.customer_id
+        LEFT JOIN vehicle.vehicles   AS v ON v.id = o.vehicle_id
+        <!-- Stav aktivní faktury zakázky. Partial unique index uq_invoices_order_active
+             (V48 + V69) zaručuje nejvýš jednu aktivní fakturu na zakázku, takže tenhle
+             LEFT JOIN nenásobí řádky a nepotřebuje GROUP BY. Predikát proto MUSÍ zůstat
+             shodný s tím indexem — jinak by zakázka s dobropisovanou i novou fakturou
+             byla v seznamu dvakrát.
+             Stornované ani dobropisované se nepočítají: po obojím lze zakázku fakturovat
+             znovu, takže "má fakturu" = má aktivní. -->
+        LEFT JOIN billing.invoices AS bi
+               ON bi.order_id = o.id
+              AND bi.status &lt;&gt; 'CANCELLED'
+              AND bi.credited_at IS NULL
+        <include refid="WhereClause"/>
+        ORDER BY <include refid="orderSortOrder"/>
+        LIMIT #{params.pageSize} OFFSET #{params.offset}
+    </select>
+
+    <!--
+        Whitelist seřaditelných sloupců (TD-46, U3R.2). JOINy na customer i vehicle
+        už v dotazu jsou, takže řazení podle zákazníka a vozidla nic nepřidává.
+
+        `customerName` řadí přes COALESCE(company_name, last_name) — zobrazený
+        displayName se skládá z obou sloupců podle typu zákazníka, řadit jen podle
+        jednoho by u firem nebo fyzických osob dalo prázdno.
+
+        `status` se řadí podle pořadí ve workflow, ne abecedně: přijata → diagnostika
+        → čekání na díly → probíhá → k vyzvednutí → dokončena → zrušena.
+
+        Výchozí klíč `createdAt` (vzestupně) zachovává původní pořadí seznamu.
+    -->
+    <sql id="orderSortOrder">
+        <choose>
+            <when test="params.sortBy == 'orderNumber'">
+                o.order_number <if test="params.sortDesc">DESC</if>, o.id <if test="params.sortDesc">DESC</if>
+            </when>
+            <when test="params.sortBy == 'status'">
+                ARRAY_POSITION(
+                    ARRAY['RECEIVED','DIAGNOSIS','WAITING_FOR_PARTS','IN_PROGRESS',
+                          'READY_FOR_PICKUP','COMPLETED','CANCELLED']::text[],
+                    o.status::text) <if test="params.sortDesc">DESC</if>, o.id <if test="params.sortDesc">DESC</if>
+            </when>
+            <when test="params.sortBy == 'customerName'">
+                COALESCE(c.company_name, c.last_name) <if test="params.sortDesc">DESC</if> NULLS LAST, o.id <if test="params.sortDesc">DESC</if>
+            </when>
+            <when test="params.sortBy == 'licensePlate'">
+                v.license_plate <if test="params.sortDesc">DESC</if> NULLS LAST, o.id <if test="params.sortDesc">DESC</if>
+            </when>
+            <when test="params.sortBy == 'brand'">
+                v.brand <if test="params.sortDesc">DESC</if> NULLS LAST,
+                v.model <if test="params.sortDesc">DESC</if> NULLS LAST, o.id <if test="params.sortDesc">DESC</if>
+            </when>
+            <when test="params.sortBy == 'estimatedCompletionAt'">
+                o.estimated_completion_at <if test="params.sortDesc">DESC</if> NULLS LAST, o.id <if test="params.sortDesc">DESC</if>
+            </when>
+            <otherwise>
+                o.created_at <if test="params.sortDesc">DESC</if>,
+                o.status <if test="params.sortDesc">DESC</if>,
+                o.estimated_completion_at <if test="params.sortDesc">DESC</if> NULLS LAST,
+                o.id <if test="params.sortDesc">DESC</if>
+            </otherwise>
+        </choose>
+    </sql>
+
+    <select id="countSearch" resultType="java.lang.Long">
+        SELECT COUNT(*)
+        FROM "order".orders AS o
+        LEFT JOIN customer.customers AS c ON c.id = o.customer_id
+        LEFT JOIN vehicle.vehicles   AS v ON v.id = o.vehicle_id
+        <include refid="WhereClause"/>
+    </select>
+
+    <select id="findById" resultMap="OrderResultMap">
+        SELECT
+            <include refid="orderColumns"/>,
+            <include refid="customerDisplayName"/>,
+            <include refid="vehicleColumns"/>,
+            bi.status AS invoice_status,
+            bi.id     AS invoice_id
+        FROM "order".orders AS o
+        LEFT JOIN customer.customers AS c ON c.id = o.customer_id
+        LEFT JOIN vehicle.vehicles   AS v ON v.id = o.vehicle_id
+        <!-- Aktivní faktura zakázky — týž predikát jako v `search` a jako partial unique
+             index uq_invoices_order_active (V48 + V69), takže JOIN nenásobí řádky.
+             Detail ji potřebuje kvůli dialogu zrušení: podle stavu nabídne storno konceptu,
+             nebo proklik na dobropis. -->
+        LEFT JOIN billing.invoices AS bi
+               ON bi.order_id = o.id
+              AND bi.status &lt;&gt; 'CANCELLED'
+              AND bi.credited_at IS NULL
+        WHERE o.id = #{id}
+    </select>
+
+    <select id="countOpenByCustomerId" resultType="java.lang.Integer">
+        SELECT COUNT(*)
+        FROM "order".orders
+        WHERE customer_id = #{customerId}
+          AND is_active = TRUE
+          AND status NOT IN ('COMPLETED', 'CANCELLED')
+    </select>
+
+    <select id="countOpenByVehicleId" resultType="java.lang.Integer">
+        SELECT COUNT(*)
+        FROM "order".orders
+        WHERE vehicle_id = #{vehicleId}
+          AND is_active = TRUE
+          AND status NOT IN ('COMPLETED', 'CANCELLED')
+    </select>
+
+</mapper>

@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+
+<!--
+    RegistrySnapshotMapper.xml — SQL pro cz.palo.autoservis.mapper.RegistrySnapshotMapper
+    Tabulka: vehicle.registry_snapshots (vždy plně kvalifikovaná).
+    Append-only; cache vehicles.stk_valid_until udržuje DB trigger
+    (trg_registry_snapshots_sync_stk) na INSERT/UPDATE/DELETE.
+    raw_response je JSONB: doménový objekt ho nese jako JSON String, takže
+    INSERT castuje text na jsonb a SELECTy zpět — kvůli jedinému místu volání
+    není potřeba TypeHandler.
+-->
+<mapper namespace="cz.palo.autoservis.mapper.RegistrySnapshotMapper">
+
+    <!-- =========================================================
+         Result map / reusable columns
+         ========================================================= -->
+
+    <resultMap id="RegistrySnapshotResultMap" type="cz.palo.autoservis.model.domain.vehicle.RegistrySnapshot">
+        <id     property="id"                 column="id"/>
+        <result property="vehicleId"          column="vehicle_id"/>
+        <result property="stkValidUntil"      column="stk_valid_until"/>
+        <result property="lastInspectionDate" column="last_inspection_date"/>
+        <result property="registryStatus"     column="registry_status"/>
+        <result property="rawResponse"        column="raw_response"/>
+        <result property="fetchedAt"          column="fetched_at"/>
+        <result property="createdBy"          column="created_by"/>
+    </resultMap>
+
+    <sql id="snapshotColumns">
+        s.id, s.vehicle_id, s.stk_valid_until, s.last_inspection_date,
+        s.registry_status, s.raw_response::text AS raw_response,
+        s.fetched_at, s.created_by
+    </sql>
+
+    <!-- =========================================================
+         Insert
+         ========================================================= -->
+
+    <insert id="insert"
+            parameterType="cz.palo.autoservis.model.domain.vehicle.RegistrySnapshot"
+            useGeneratedKeys="true" keyProperty="id" keyColumn="id">
+        INSERT INTO vehicle.registry_snapshots (
+            vehicle_id, stk_valid_until, last_inspection_date,
+            registry_status, raw_response, created_by
+        ) VALUES (
+            #{vehicleId},
+            #{stkValidUntil},
+            #{lastInspectionDate},
+            #{registryStatus},
+            CAST(#{rawResponse} AS jsonb),
+            #{createdBy}
+        )
+    </insert>
+
+    <!-- =========================================================
+         Select
+         ========================================================= -->
+
+    <select id="findById" resultMap="RegistrySnapshotResultMap">
+        SELECT <include refid="snapshotColumns"/>
+        FROM vehicle.registry_snapshots s
+        WHERE s.id = #{id}
+    </select>
+
+    <select id="findByVehicleId" resultMap="RegistrySnapshotResultMap">
+        SELECT <include refid="snapshotColumns"/>
+        FROM vehicle.registry_snapshots s
+        WHERE s.vehicle_id = #{vehicleId}
+        ORDER BY s.fetched_at DESC, s.id DESC
+    </select>
+
+</mapper>

@@ -1,0 +1,229 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+
+<!--
+    OrderItemMapper.xml — SQL pro cz.palo.autoservis.mapper.OrderItemMapper
+    Tabulka: "order".order_items (název schématu je rezervované slovo a vyžaduje uvozovky)
+-->
+<mapper namespace="cz.palo.autoservis.mapper.OrderItemMapper">
+
+    <resultMap id="OrderItemResultMap" type="cz.palo.autoservis.model.domain.order.OrderItem">
+        <id     property="id"           column="id"/>
+        <result property="orderId"      column="order_id"/>
+        <result property="goodsReceiptItemId"      column="goods_receipt_item_id"/>
+        <!-- Odvozená pole — plní jen findByOrderId, jinde zůstanou prázdná. -->
+        <result property="issuedQuantity"          column="issued_quantity"/>
+        <result property="productSku"              column="product_sku"/>
+        <result property="goodsReceiptId"          column="goods_receipt_id"/>
+        <result property="supplierName"            column="supplier_name"/>
+        <result property="receiptInvoiceNumber"    column="receipt_invoice_number"/>
+        <result property="itemType"     column="item_type"/>
+        <result property="name"         column="name"/>
+        <result property="quantity"     column="quantity"/>
+        <result property="unit"         column="unit"/>
+        <result property="purchasePrice" column="purchase_price"/>
+        <result property="unitPrice"    column="unit_price"/>
+        <result property="vatRate"      column="vat_rate"/>
+        <result property="position"     column="position"/>
+        <result property="note"         column="note"/>
+        <result property="employeeId"   column="employee_id"/>
+        <result property="employeeName" column="employee_name"/>
+        <result property="createdAt"    column="created_at"/>
+        <result property="updatedAt"    column="updated_at"/>
+        <result property="createdBy"    column="created_by"/>
+    </resultMap>
+
+    <resultMap id="OrderItemSummaryResultMap" type="cz.palo.autoservis.model.domain.order.OrderItemSummary">
+        <id property="orderId"              column="order_id"/>
+        <result property="laborNet"         column="labor_net"/>
+        <result property="laborGross"       column="labor_gross"/>
+        <result property="materialNet"      column="material_net"/>
+        <result property="materialGross"    column="material_gross"/>
+        <result property="serviceNet"       column="service_net"/>
+        <result property="serviceGross"     column="service_gross"/>
+        <result property="totalNet"         column="total_net"/>
+        <result property="totalGross"       column="total_gross"/>
+        <result property="laborCost"        column="labor_cost"/>
+        <result property="materialCost"     column="material_cost"/>
+        <result property="serviceCost"      column="service_cost"/>
+        <result property="totalCost"        column="total_cost"/>
+    </resultMap>
+
+    <sql id="orderItemSummaryColumns">
+        ois.order_id, ois.labor_net, ois.labor_gross,
+        ois.material_net, ois.material_gross, ois.service_net,
+        ois.service_gross, ois.total_net, ois.total_gross,
+        ois.labor_cost, ois.material_cost, ois.service_cost, ois.total_cost
+    </sql>
+
+    <sql id="orderItemColumns">
+        oi.id, oi.order_id, oi.goods_receipt_item_id, oi.item_type, oi.name,
+        oi.quantity, oi.unit, oi.purchase_price, oi.unit_price,
+        oi.vat_rate, oi.position, oi.note, oi.employee_id,
+        oi.created_at, oi.updated_at, oi.created_by
+    </sql>
+
+    <!--
+        Kolik z položky už fyzicky odešlo ze skladu (V83). Odvozené z ledgeru, neukládá se —
+        pohyby jsou jediný zdroj pravdy. Výdej je záporný, proto `-SUM`; vratka ho odečte,
+        takže položka po znovuotevření zakázky nebo po snížení množství spadne zpátky na nulu.
+
+        Korelováno na `oi`, takže fragment funguje v každém dotazu s tímhle aliasem. Pravidlo
+        MUSÍ být na jednom místě: stálo tu třikrát opsané (findIssued, findReserved a nově
+        i výpis položek) a tři kopie téhož výrazu se dřív či později rozejdou.
+    -->
+    <sql id="issuedQuantity">
+        COALESCE((SELECT -SUM(m.quantity)
+                    FROM warehouse.stock_movements m
+                   WHERE m.order_item_id = oi.id), 0)
+    </sql>
+
+    <insert id="insert" parameterType="cz.palo.autoservis.model.domain.order.OrderItem"
+            useGeneratedKeys="true" keyProperty="id" keyColumn="id">
+        INSERT INTO "order".order_items (
+            order_id, goods_receipt_item_id, item_type, name, quantity, unit,
+            purchase_price, unit_price, vat_rate, position, note, employee_id, created_by
+        ) VALUES (
+            #{orderId},
+            #{goodsReceiptItemId},
+            #{itemType, typeHandler=cz.palo.autoservis.config.mybatis.PgEnumTypeHandler$OrderItemTypeHandler},
+            #{name}, #{quantity}, #{unit},
+            #{purchasePrice}, #{unitPrice}, #{vatRate}, #{position}, #{note}, #{employeeId}, #{createdBy}
+        )
+    </insert>
+
+    <update id="update" parameterType="cz.palo.autoservis.model.domain.order.OrderItem">
+        UPDATE "order".order_items
+        <set>
+            <if test="itemType != null">
+                item_type = #{itemType, typeHandler=cz.palo.autoservis.config.mybatis.PgEnumTypeHandler$OrderItemTypeHandler},
+            </if>
+            <if test="name != null">name = #{name},</if>
+            <if test="quantity != null">quantity = #{quantity},</if>
+            <if test="unit != null">unit = #{unit},</if>
+            purchase_price = #{purchasePrice},
+            <if test="unitPrice != null">unit_price = #{unitPrice},</if>
+            <if test="vatRate != null">vat_rate = #{vatRate},</if>
+            <if test="position != null">position = #{position},</if>
+            note = #{note},
+            employee_id = #{employeeId},
+        </set>
+        WHERE id = #{id}
+    </update>
+
+    <update id="reorder">
+        UPDATE "order".order_items
+        SET position = CASE id
+            <foreach collection="items" item="item">
+                WHEN #{item.id} THEN #{item.position}
+            </foreach>
+        END
+        WHERE id IN
+        <foreach collection="items" item="item" open="(" separator="," close=")">
+            #{item.id}
+        </foreach>
+        AND order_id = #{orderId}
+    </update>
+
+    <delete id="delete">
+        DELETE FROM "order".order_items WHERE id = #{id}
+    </delete>
+
+    <!--
+        Výpis položek nese i **vydané množství** a **SKU dílu** (2026-08-07).
+
+        Bez nich nešlo v tabulce položek rozlišit ručně napsaný materiál od skladového ani
+        rezervaci od výdeje — všechny řádky vypadaly stejně, přestože jde o tři různé stavy.
+        SKU navíc rozliší dvě položky se shodným názvem z různých šarží (dodavatelské názvy
+        se opakují), což je přesně případ, kdy obsluha kontroluje, jestli naimportovala
+        správný díl.
+
+        Nese i **původ dílu** — dodavatele a číslo jeho faktury (2026-08-07). Odpovídá na
+        otázku „u koho tenhle díl reklamovat": díl odejde v záruce za půl roku a bez tohohle
+        se doklad, na kterém přišel, dohledával ručně ve skladu. Řetěz položka → šarže →
+        příjemka v datech existoval od V18, jen se nikdy nikam nepropsal.
+
+        JOINy přes šarži na kartu dílu a na příjemku; u ručně zadané položky je
+        `goods_receipt_item_id` NULL, takže všechna tahle pole zůstanou prázdná a řádek se
+        skladem nemá nic společného.
+    -->
+    <select id="findByOrderId" resultMap="OrderItemResultMap">
+        SELECT <include refid="orderItemColumns"/>,
+               (e.first_name || ' ' || e.last_name) AS employee_name,
+               p.sku AS product_sku,
+               gr.id                     AS goods_receipt_id,
+               gr.supplier_name_snapshot AS supplier_name,
+               gr.invoice_number         AS receipt_invoice_number,
+               <include refid="issuedQuantity"/> AS issued_quantity
+        FROM "order".order_items AS oi
+        LEFT JOIN employee.employees AS e ON e.id = oi.employee_id
+        LEFT JOIN warehouse.goods_receipt_items AS gri ON gri.id = oi.goods_receipt_item_id
+        LEFT JOIN warehouse.products            AS p   ON p.id  = gri.product_id
+        LEFT JOIN warehouse.goods_receipts      AS gr  ON gr.id  = gri.goods_receipt_id
+        WHERE oi.order_id = #{orderId}
+        ORDER BY oi.position
+    </select>
+
+    <!--
+        Položky zakázky, které drží materiál ze skladu, ale ze skladu ještě neodešly —
+        tedy pouhé REZERVACE čekající na výdej (V83).
+
+        Nevydané = součet pohybů té položky je nula. Vratka výdej odečte, takže sem spadne
+        i položka, jejíž výdej se vrátil (znovuotevření zakázky) a má se vydat znovu.
+        Řadí se podle pozice, ať výdej vytváří pohyby ve stejném pořadí, v jakém položky
+        vidí obsluha.
+
+        FOR UPDATE tu není: souběh řeší až zámek šarže při samotném výdeji.
+    -->
+    <!--
+        Opak předchozího: položky, které materiál ze skladu skutečně DRŽÍ — už byl vydán
+        a zatím se nevrátil (V83).
+
+        Podle tohohle se rozhoduje, jestli jde zakázku zrušit. Pouhá rezervace zrušení
+        nebrání: díl leží v regálu a smazáním zakázky se slib prostě uvolní, do skladu se
+        nezapisuje nic. Blokovat musí jen materiál, který fyzicky odešel a je potřeba
+        rozhodnout, co se s ním stalo.
+
+        Vydaná = součet pohybů položky je kladný. Vratka výdej odečte, takže položka, která
+        se už vrátila (znovuotevření, snížení množství), sem nespadne.
+    -->
+    <select id="findIssuedByOrderId" resultMap="OrderItemResultMap">
+        SELECT <include refid="orderItemColumns"/>
+        FROM "order".order_items AS oi
+        WHERE oi.order_id = #{orderId}
+          AND oi.goods_receipt_item_id IS NOT NULL
+          AND <include refid="issuedQuantity"/> &gt; 0
+        ORDER BY oi.position
+    </select>
+
+    <select id="findReservedByOrderId" resultMap="OrderItemResultMap">
+        SELECT <include refid="orderItemColumns"/>
+        FROM "order".order_items AS oi
+        WHERE oi.order_id = #{orderId}
+          AND oi.goods_receipt_item_id IS NOT NULL
+          AND <include refid="issuedQuantity"/> = 0
+        ORDER BY oi.position
+    </select>
+
+    <select id="findById" resultMap="OrderItemResultMap">
+        SELECT <include refid="orderItemColumns"/>,
+               (e.first_name || ' ' || e.last_name) AS employee_name
+        FROM "order".order_items AS oi
+        LEFT JOIN employee.employees AS e ON e.id = oi.employee_id
+        WHERE oi.id = #{id}
+    </select>
+
+    <select id="findMaxPositionByOrderId" resultType="java.lang.Integer">
+        SELECT COALESCE(MAX(position), 0)
+        FROM "order".order_items
+        WHERE order_id = #{orderId}
+    </select>
+
+    <select id="findSummaryByOrderId" resultMap="OrderItemSummaryResultMap">
+        SELECT <include refid="orderItemSummaryColumns"/>
+        FROM "order".v_order_item_summary AS ois
+        WHERE ois.order_id = #{orderId}
+    </select>
+
+</mapper>

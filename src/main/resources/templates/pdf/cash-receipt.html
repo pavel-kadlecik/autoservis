@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="cs" xmlns:th="http://www.thymeleaf.org">
+<head>
+    <meta charset="UTF-8"/>
+    <title>Příjmový pokladní doklad</title>
+    <style th:replace="~{pdf/invoice-styles :: styles}"></style>
+</head>
+<body>
+
+<!-- Stornovaný doklad zůstává v číselné řadě (§35 ZoÚ) a dá se znovu vytisknout — na papíře
+     proto musí být na první pohled vidět, že už neplatí, i s důvodem. -->
+<div th:if="${r.status != null and r.status.name() == 'CANCELLED'}"
+     style="border: 2px solid #b42318; color: #b42318; text-align: center;
+            font-size: 14pt; font-weight: bold; padding: 5px; margin-bottom: 12px;">
+    STORNOVÁNO
+    <div style="font-size: 9pt; font-weight: normal;">
+        <span th:if="${r.cancelledAt != null}"
+              th:text="${#temporals.format(r.cancelledAt, 'dd.MM.yyyy')} + ' — '">01.01.2026 — </span>
+        <span th:text="${r.cancellationReason}">důvod</span>
+    </div>
+</div>
+
+<!-- Patička opakovaná na každé straně (running element) -->
+<div class="doc-footer">Příjmový pokladní doklad č. <span th:text="${r.receiptNumber}">PPD00000</span></div>
+
+<!-- ================= Hlavička ================= -->
+<header>
+    <table>
+        <tr>
+            <td style="width: 30%; vertical-align: middle;">
+                <img th:if="${logoDataUri}" th:src="${logoDataUri}"
+                     style="max-height: 90px; max-width: 300px;"/>
+            </td>
+            <td class="text-right" style="width: 70%; vertical-align: middle;">
+                <div class="party-block" style="font-size: 14pt; font-weight: bold;">
+                    PŘÍJMOVÝ POKLADNÍ DOKLAD
+                </div>
+                <div class="party-block" style="font-size: 12pt; font-weight: bold;">
+                    č. <span th:text="${r.receiptNumber}">PPD00000</span>
+                </div>
+                <div class="party-line muted">
+                    Ze dne: <span th:text="${#temporals.format(r.issueDate, 'dd.MM.yyyy')}">01.01.2026</span>
+                </div>
+            </td>
+        </tr>
+    </table>
+</header>
+
+<!-- ================= Firma (příjemce hotovosti) + razítko ================= -->
+<section class="section">
+    <div class="section-head">Firma</div>
+    <table class="keep-together">
+        <tr>
+            <td style="width: 55%; vertical-align: top; padding: 8px;">
+                <div class="party-line bold" th:text="${r.supplier?.name}">Firma s.r.o.</div>
+                <div class="party-line" th:text="|${r.supplier?.street} ${r.supplier?.streetNumber}|">Ulice 1</div>
+                <div class="party-line" th:text="|${r.supplier?.postalCode} ${r.supplier?.city}|">000 00 Město</div>
+                <div class="party-line" th:if="${r.supplier?.ico}">
+                    <span class="muted">IČ:</span> <span th:text="${r.supplier.ico}">00000000</span>
+                </div>
+                <div class="party-line" th:if="${r.supplier?.dic}">
+                    <span class="muted">DIČ:</span> <span th:text="${r.supplier.dic}">CZ00000000</span>
+                </div>
+            </td>
+            <td style="width: 45%; vertical-align: bottom;" class="footer-note">
+                <img th:if="${signature}" th:src="${signature}"
+                     style="display: block; margin-left: auto; max-height: 90px; max-width: 260px;"/>
+                <div style="text-align: center;">Razítko, podpis</div>
+            </td>
+        </tr>
+    </table>
+</section>
+
+<!-- ================= Přijato od (plátce) ================= -->
+<section class="section">
+    <div class="section-head">Přijato od</div>
+    <div style="padding: 8px;">
+        <div class="party-line bold" th:text="${r.customer?.name}">Jan Novák</div>
+        <div class="party-line" th:text="|${r.customer?.street} ${r.customer?.streetNumber}|">Ulice 2</div>
+        <div class="party-line" th:text="|${r.customer?.postalCode} ${r.customer?.city}|">000 00 Město</div>
+        <div class="party-line" th:if="${r.customer?.ico}">
+            <span class="muted">IČ:</span> <span th:text="${r.customer.ico}">00000000</span>
+        </div>
+        <div class="party-line" th:if="${r.customer?.dic}">
+            <span class="muted">DIČ:</span> <span th:text="${r.customer.dic}">CZ00000000</span>
+        </div>
+    </div>
+</section>
+
+<!-- ================= Celkem (částka číslem a slovy) + rozpis DPH ================= -->
+<section class="section">
+    <div class="section-head">Celkem</div>
+    <table class="keep-together" style="margin-top: 8px;">
+        <tr>
+            <td style="width: 48%; vertical-align: top; padding: 4px 8px;">
+                <div style="font-size: 20pt; font-weight: bold;"
+                     th:text="${#numbers.formatDecimal(r.amount, 1, 'WHITESPACE', 2, 'COMMA')} + ' Kč'">0,00 Kč</div>
+                <div class="party-block">
+                    <div class="muted">Slovy Kč:</div>
+                    <div class="bold" th:text="${r.amountInWords}">nula</div>
+                </div>
+            </td>
+            <td style="width: 52%; vertical-align: top; padding: 4px 8px;">
+                <!-- Rekapitulace DPH po sazbách (převzato z faktury) -->
+                <table class="vat-summary">
+                    <thead>
+                    <tr>
+                        <th>Sazba DPH</th>
+                        <th>Bez DPH</th>
+                        <th>DPH</th>
+                    </tr>
+                    </thead>
+                    <tbody>
+                    <tr th:each="v : ${r.vatSummary}">
+                        <td th:text="${v.rate} + ' %'">21 %</td>
+                        <td th:text="${#numbers.formatDecimal(v.base, 1, 'WHITESPACE', 2, 'COMMA')}">0,00</td>
+                        <td th:text="${#numbers.formatDecimal(v.vat, 1, 'WHITESPACE', 2, 'COMMA')}">0,00</td>
+                    </tr>
+                    <tr style="font-weight: bold;">
+                        <td>Celkem</td>
+                        <td th:text="${#numbers.formatDecimal(r.totalNet, 1, 'WHITESPACE', 2, 'COMMA')}">0,00</td>
+                        <td th:text="${#numbers.formatDecimal(r.totalVat, 1, 'WHITESPACE', 2, 'COMMA')}">0,00</td>
+                    </tr>
+                    </tbody>
+                </table>
+                <!-- Zaokrouhlení hotovosti na celé Kč (§ 36/5 ZDPH — mimo základ daně) -->
+                <div class="party-line" style="text-align: right; margin-top: 4px;"
+                     th:if="${r.rounding != null and r.rounding.signum() != 0}">
+                    <span class="muted">Zaokrouhlení:</span>
+                    <span th:text="${(r.rounding.signum() > 0 ? '+' : '') + #numbers.formatDecimal(r.rounding, 1, 'WHITESPACE', 2, 'COMMA') + ' Kč'}">+0,20 Kč</span>
+                </div>
+            </td>
+        </tr>
+    </table>
+</section>
+
+<!-- ================= Účel platby ================= -->
+<section class="section">
+    <div class="party-line" style="padding: 0 8px;">
+        <span class="muted">Účel platby:</span> <span th:text="${r.purpose}">Úhrada faktury</span>
+    </div>
+</section>
+
+<!-- ================= Schválil / Podpis pokladníka ================= -->
+<table class="keep-together footer-note" style="margin-top: 80px;">
+    <tr>
+        <td style="width: 50%; text-align: center;">
+            <div style="border-top: 1px solid #999; padding-top: 4px; margin: 0 20px;">Schválil</div>
+        </td>
+        <td style="width: 50%; text-align: center;">
+            <div style="border-top: 1px solid #999; padding-top: 4px; margin: 0 20px;">Podpis</div>
+        </td>
+    </tr>
+</table>
+
+</body>
+</html>

@@ -1,0 +1,112 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="cz.palo.autoservis.mapper.CashReceiptMapper">
+
+    <resultMap id="CashReceiptResultMap" type="cz.palo.autoservis.model.domain.billing.CashReceipt">
+        <id     property="id"            column="id"/>
+        <result property="receiptNumber" column="receipt_number"/>
+        <result property="invoiceId"     column="invoice_id"/>
+        <result property="issueDate"     column="issue_date"/>
+        <result property="amount"        column="amount"/>
+        <result property="purpose"       column="purpose"/>
+        <result property="status"        column="status"
+                typeHandler="cz.palo.autoservis.config.mybatis.PgEnumTypeHandler$CashReceiptStatusHandler"/>
+        <result property="cancelledAt"        column="cancelled_at"/>
+        <result property="cancelledBy"        column="cancelled_by"/>
+        <result property="cancellationReason" column="cancellation_reason"/>
+        <result property="createdAt"     column="created_at"/>
+        <result property="createdBy"     column="created_by"/>
+    </resultMap>
+
+    <sql id="cashReceiptColumns">
+        cr.id, cr.receipt_number, cr.invoice_id, cr.issue_date,
+        cr.amount, cr.purpose, cr.status,
+        cr.cancelled_at, cr.cancelled_by, cr.cancellation_reason,
+        cr.created_at, cr.created_by
+    </sql>
+
+    <!-- Číslo od V92 skládá aplikace podle masky (DB generátor zrušen); unikátnost jistí uq_cash_receipt_number. -->
+    <insert id="insert" parameterType="cz.palo.autoservis.model.domain.billing.CashReceipt"
+            useGeneratedKeys="true" keyProperty="id" keyColumn="id">
+        INSERT INTO billing.cash_receipts (
+            receipt_number, invoice_id, issue_date, amount, purpose, created_by
+        ) VALUES (
+            #{receiptNumber}, #{invoiceId}, #{issueDate}, #{amount}, #{purpose}, #{createdBy}
+        )
+    </insert>
+
+    <select id="findById" resultMap="CashReceiptResultMap">
+        SELECT <include refid="cashReceiptColumns"/>
+        FROM billing.cash_receipts AS cr
+        WHERE cr.id = #{id}
+    </select>
+
+    <select id="findByReceiptNumber" resultMap="CashReceiptResultMap">
+        SELECT <include refid="cashReceiptColumns"/>
+        FROM billing.cash_receipts AS cr
+        WHERE cr.receipt_number = #{receiptNumber}
+    </select>
+
+    <select id="findMaxSequence" resultType="java.lang.Long">
+        SELECT MAX((regexp_match(receipt_number, #{regex}))[1]::BIGINT)
+        FROM billing.cash_receipts
+        WHERE receipt_number ~ #{regex}
+    </select>
+
+    <select id="findNumbersByRegex" resultType="java.lang.String">
+        SELECT receipt_number
+        FROM billing.cash_receipts
+        WHERE receipt_number ~ #{regex}
+    </select>
+
+    <select id="lockNumberSeries" resultType="java.lang.Boolean">
+        SELECT pg_advisory_xact_lock(hashtext(#{key})) IS NOT NULL
+    </select>
+
+    <!--
+      Tvrdé DELETE — vědomé rozhodnutí uživatele (2026-08-09, výjimka z R-06): řadu PPD si
+      obsluha řídí sama, smazáním se číslo uvolní (MAX+1 ho nabídne znovu, díru uprostřed
+      zavře ruční zápis). Mazat jde i stornovaný doklad — jestli má záznam zůstat, rozhoduje
+      uživatel. Doklad nemá závislé řádky, faktura se smazáním uvolní pro další akce.
+    -->
+    <delete id="deleteById">
+        DELETE FROM billing.cash_receipts
+        WHERE id = #{id}
+    </delete>
+
+    <select id="findByInvoiceId" resultMap="CashReceiptResultMap">
+        SELECT <include refid="cashReceiptColumns"/>
+        FROM billing.cash_receipts AS cr
+        WHERE cr.invoice_id = #{invoiceId}
+        ORDER BY cr.id
+    </select>
+
+    <!--
+      Platný (nestornovaný) doklad k faktuře — guard proti druhému PPD. Odpovídá predikátu
+      částečného unikátu uq_cash_receipts_invoice_active (V68), aby service hlásila konflikt
+      dřív, než ho ohlásí DB jako DataIntegrityViolation.
+    -->
+    <select id="findActiveByInvoiceId" resultMap="CashReceiptResultMap">
+        SELECT <include refid="cashReceiptColumns"/>
+        FROM billing.cash_receipts AS cr
+        WHERE cr.invoice_id = #{invoiceId}
+          AND cr.status &lt;&gt; 'CANCELLED'::billing.cash_receipt_status
+    </select>
+
+    <!--
+      Storno. Guard `status = 'ISSUED'` dělá z UPDATE atomický přechod — dvě souběžná storna
+      téhož dokladu skončí tak, že druhé změní 0 řádků a service to ohlásí, místo aby přepsalo
+      důvod a čas prvního.
+    -->
+    <update id="cancel">
+        UPDATE billing.cash_receipts
+        SET status              = 'CANCELLED'::billing.cash_receipt_status,
+            cancelled_at        = NOW(),
+            cancelled_by        = #{userId},
+            cancellation_reason = #{reason}
+        WHERE id = #{id}
+          AND status = 'ISSUED'::billing.cash_receipt_status
+    </update>
+
+</mapper>

@@ -1,0 +1,313 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+
+<!--
+    VehicleMapper.xml — SQL pro cz.palo.autoservis.mapper.VehicleMapper
+    Tabulka: vehicle.vehicles (vždy plně kvalifikovaná dle konvence projektu)
+    ENUM sloupce (fuel_type, transmission) vyžadují jdbcType=OTHER — PostgreSQL
+    driver odmítá přiřazení do typovaného ENUM sloupce bez explicitního castu.
+-->
+<mapper namespace="cz.palo.autoservis.mapper.VehicleMapper">
+
+    <!-- =========================================================
+         Result maps
+         ========================================================= -->
+
+    <!--
+        Základní mapa vozidla. Vnořená asociace 'customer' se plní, jen když
+        dotaz JOINuje customer.customers a selectuje sloupce s prefixem 'cust_'.
+        Jinak zůstává 'customer' null.
+    -->
+    <resultMap id="VehicleResultMap" type="cz.palo.autoservis.model.domain.vehicle.Vehicle">
+        <id     property="id"                    column="id"/>
+        <result property="customerId"            column="customer_id"/>
+        <result property="vin"                   column="vin"/>
+        <result property="machineSerialNumber"   column="machine_serial_number"/>
+        <result property="licensePlate"          column="license_plate"/>
+        <result property="brand"                 column="brand"/>
+        <result property="model"                 column="model"/>
+        <result property="yearOfManufacture"     column="year_of_manufacture"/>
+        <result property="firstRegistrationDate" column="first_registration_date"/>
+        <result property="fuelType"              column="fuel_type"/>
+        <result property="transmission"          column="transmission"/>
+        <result property="engineCode"            column="engine_code"/>
+        <result property="engineDisplacementCcm" column="engine_displacement_ccm"/>
+        <result property="enginePowerKw"         column="engine_power_kw"/>
+        <result property="color"                 column="color"/>
+        <result property="currentMileageKm"      column="current_mileage_km"/>
+        <result property="stkValidUntil"         column="stk_valid_until"/>
+        <result property="wheels"                column="wheels"/>
+        <result property="internalNote"          column="internal_note"/>
+        <result property="active"                column="is_active"/>
+        <result property="createdAt"             column="created_at"/>
+        <result property="updatedAt"             column="updated_at"/>
+        <result property="createdBy"             column="created_by"/>
+        <!-- columnPrefix="cust_" (TD-56): sloupce zákazníka jsou v JOIN dotazech aliasované
+             cust_* (customerColumnsForVehicle), jinak by is_active/created_at kolidovaly se
+             stejnojmennými sloupci vozidla a customer.active by nesl stav VOZIDLA, ne majitele. -->
+        <association property="customer"
+                     columnPrefix="cust_"
+                     resultMap="cz.palo.autoservis.mapper.CustomerMapper.CustomerEmbeddedResultMap"/>
+    </resultMap>
+
+    <!-- =========================================================
+         Reusable SQL fragments
+         ========================================================= -->
+
+    <sql id="vehicleColumns">
+        v.id, v.customer_id, v.vin, v.machine_serial_number, v.license_plate, v.brand, v.model,
+        v.year_of_manufacture, v.first_registration_date,
+        v.fuel_type, v.transmission, v.engine_code,
+        v.engine_displacement_ccm, v.engine_power_kw,
+        v.color, v.current_mileage_km, v.stk_valid_until, v.wheels,
+        v.internal_note, v.is_active,
+        v.created_at, v.updated_at, v.created_by
+    </sql>
+
+    <!-- Dynamická WHERE klauzule sdílená search a countSearch. -->
+    <sql id="searchWhere">
+        <where>
+            <if test="params.activeOnly">
+                v.is_active = TRUE
+            </if>
+            <if test="params.search != null and params.search != ''">
+                <bind name="searchLike" value="'%' + params.search + '%'" />
+                AND (
+                    LOWER(v.vin)           LIKE LOWER(#{searchLike})
+                    OR LOWER(v.machine_serial_number) LIKE LOWER(#{searchLike})
+                    OR LOWER(v.license_plate) LIKE LOWER(#{searchLike})
+                    OR LOWER(v.brand)      LIKE LOWER(#{searchLike})
+                    OR LOWER(v.model)      LIKE LOWER(#{searchLike})
+                    OR LOWER(c.first_name)    LIKE LOWER(#{searchLike})
+                    OR LOWER(c.last_name)  LIKE LOWER(#{searchLike})
+                    OR LOWER(c.company_name) LIKE LOWER(#{searchLike})
+                )
+            </if>
+            <!-- „Končící STK" = do 30 dnů nebo už propadlá; vozidla
+                 bez dat z registru jsou záměrně vyloučena. -->
+            <if test="params.stkExpiring">
+                AND v.stk_valid_until IS NOT NULL
+                AND v.stk_valid_until &lt;= CURRENT_DATE + INTERVAL '30 days'
+            </if>
+        </where>
+    </sql>
+
+    <!-- =========================================================
+         Insert
+         ========================================================= -->
+
+    <insert id="insert"
+            parameterType="cz.palo.autoservis.model.domain.vehicle.Vehicle"
+            useGeneratedKeys="true" keyProperty="id" keyColumn="id">
+        INSERT INTO vehicle.vehicles (
+            customer_id, vin, machine_serial_number, license_plate, brand, model,
+            year_of_manufacture, first_registration_date,
+            fuel_type, transmission,
+            engine_displacement_ccm, engine_code, engine_power_kw,
+            color, internal_note,
+            is_active, created_by
+        ) VALUES (
+            #{customerId},
+            #{vin},
+            #{machineSerialNumber},
+            #{licensePlate},
+            #{brand},
+            #{model},
+            #{yearOfManufacture},
+            #{firstRegistrationDate},
+            #{fuelType,     jdbcType=OTHER},
+            #{transmission, jdbcType=OTHER},
+            #{engineDisplacementCcm},
+            #{engineCode},
+            #{enginePowerKw},
+            #{color},
+            #{internalNote},
+            COALESCE(#{active}, TRUE),
+            #{createdBy}
+        )
+    </insert>
+
+    <!-- =========================================================
+         Select — single result
+         ========================================================= -->
+
+    <!-- PŘÍSNÉ záměrně: getById() vrací 404 pro neaktivní vozidlo. Bezpečné je to
+         JEN proto, že seznam vozidel (search) neaktivní skrývá, takže na detail
+         neaktivního vozu žádná obrazovka neodkazuje. Kdyby se to změnilo (filtr
+         zobrazující neaktivní, odkaz odjinud), tenhle filtr vyrobí stejnou 404,
+         na jakou narazil modul zákazníků — pak přepni getById na
+         findByIdIncludingInactive (nebo filtr zruš). Čtení po mutaci už jde přes
+         findByIdIncludingInactive (fetchOrFail), takže deactivate/update jsou OK. -->
+    <select id="findById" resultMap="VehicleResultMap">
+        SELECT
+            <include refid="vehicleColumns"/>,
+            <include refid="cz.palo.autoservis.mapper.CustomerMapper.customerColumnsForVehicle"/>
+        FROM vehicle.vehicles v
+        LEFT JOIN customer.customers c ON c.id = v.customer_id
+        WHERE v.id = #{id} AND v.is_active = TRUE
+    </select>
+
+    <!-- Včetně neaktivních záznamů — pro administrativní přístup a reaktivaci. -->
+    <select id="findByIdIncludingInactive" resultMap="VehicleResultMap">
+        SELECT <include refid="vehicleColumns"/>
+        FROM vehicle.vehicles v
+        WHERE v.id = #{id}
+    </select>
+
+    <!-- =========================================================
+         Select — list
+         ========================================================= -->
+
+    <select id="findByCustomerId" resultMap="VehicleResultMap">
+        SELECT <include refid="vehicleColumns"/>
+        FROM vehicle.vehicles v
+        WHERE v.customer_id = #{customerId} AND v.is_active = TRUE
+        ORDER BY v.brand, v.model, v.license_plate NULLS LAST
+    </select>
+
+    <select id="search" resultMap="VehicleResultMap">
+        SELECT
+            <include refid="vehicleColumns"/>,
+            <include refid="cz.palo.autoservis.mapper.CustomerMapper.customerColumnsForVehicle"/>
+        FROM vehicle.vehicles v
+        LEFT JOIN customer.customers c ON c.id = v.customer_id
+        <include refid="searchWhere"/>
+        ORDER BY <include refid="vehicleSortOrder"/>
+        LIMIT #{params.pageSize} OFFSET #{params.offset}
+    </select>
+
+    <!--
+        Whitelist seřaditelných sloupců (TD-46, U3R.1). Výchozí je pojmenovaný klíč
+        `customer` (seskupí vozidla po zákaznících, uvnitř podle roku výroby) — dřív
+        to byl pevný fragment ve <otherwise>, který jako jediný ignoroval sortDesc.
+        Model se řadit nedá samostatně: bez značky nedává pořadí smysl, proto je
+        součástí klíče `brand`.
+    -->
+    <sql id="vehicleSortOrder">
+        <choose>
+            <when test="params.sortBy == 'vin'">
+                v.vin <if test="params.sortDesc">DESC</if> NULLS LAST, v.id <if test="params.sortDesc">DESC</if>
+            </when>
+            <when test="params.sortBy == 'licensePlate'">
+                v.license_plate <if test="params.sortDesc">DESC</if> NULLS LAST, v.id <if test="params.sortDesc">DESC</if>
+            </when>
+            <when test="params.sortBy == 'brand'">
+                v.brand <if test="params.sortDesc">DESC</if>, v.model <if test="params.sortDesc">DESC</if>, v.id <if test="params.sortDesc">DESC</if>
+            </when>
+            <when test="params.sortBy == 'yearOfManufacture'">
+                v.year_of_manufacture <if test="params.sortDesc">DESC</if> NULLS LAST, v.id <if test="params.sortDesc">DESC</if>
+            </when>
+            <when test="params.sortBy == 'stkValidUntil'">
+                v.stk_valid_until <if test="params.sortDesc">DESC</if> NULLS LAST, v.id <if test="params.sortDesc">DESC</if>
+            </when>
+            <otherwise>
+                c.id <if test="params.sortDesc">DESC</if>,
+                v.year_of_manufacture <if test="params.sortDesc">DESC</if>,
+                v.id <if test="params.sortDesc">DESC</if>
+            </otherwise>
+        </choose>
+    </sql>
+
+    <select id="countSearch" resultType="java.lang.Long">
+        SELECT COUNT(*)
+        FROM vehicle.vehicles v
+        LEFT JOIN customer.customers c ON c.id = v.customer_id
+        <include refid="searchWhere"/>
+    </select>
+
+    <select id="autocomplete" resultType="cz.palo.autoservis.model.dto.autocomplete.AutocompleteItem">
+        <!--
+            Tři řádky nabídky: „Značka Model - SPZ", pod tím majitel a VIN. Od chvíle, kdy jde
+            objednávku založit bez zákazníka (V85), se hledá i mezi VŠEMI vozidly — bez SPZ
+            a majitele by obsluha tři stejné vozy od sebe nerozeznala.
+
+            CONCAT_WS, ne `||`: license_plate je nullable (auto bez SPZ) a `x || NULL` je NULL,
+            takže by se u takového vozu nezobrazila ani značka.
+
+            detail: VIN, u strojů bez VIN (V90) výrobní číslo — ať třetí řádek nabídky
+            nezůstane prázdný a stroje od sebe jdou rozeznat.
+        -->
+        SELECT v.id,
+               CONCAT_WS(' - ', v.brand || ' ' || v.model, v.license_plate) AS value,
+               CASE
+                   WHEN c.customer_type = 'COMPANY' THEN c.company_name
+                   ELSE c.first_name || ' ' || c.last_name
+               END AS description,
+               COALESCE(v.vin, v.machine_serial_number) AS detail
+        FROM vehicle.vehicles v
+        JOIN customer.customers c ON c.id = v.customer_id
+        <where>
+            v.is_active = TRUE
+            <if test="params.customerId != null">
+                AND v.customer_id = #{params.customerId}
+            </if>
+            <if test="params.normalizedQuery() != ''">
+                <bind name="searchLike" value="'%' + params.normalizedQuery() + '%'" />
+                AND (
+                    LOWER(v.brand) LIKE LOWER(#{searchLike})
+                    OR LOWER(v.model) LIKE LOWER(#{searchLike})
+                    OR LOWER(v.vin) LIKE LOWER(#{searchLike})
+                    OR LOWER(v.machine_serial_number) LIKE LOWER(#{searchLike})
+                    OR (v.license_plate IS NOT NULL
+                        AND LOWER(v.license_plate) LIKE LOWER(#{searchLike}))
+                )
+            </if>
+        </where>
+        LIMIT #{params.effectiveLimit} + 1 OFFSET 0
+    </select>
+
+    <!-- =========================================================
+         Update / Soft delete / Reactivate
+         ========================================================= -->
+
+    <!-- created_at a created_by jsou neměnné. updated_at udržuje DB trigger. -->
+    <update id="update" parameterType="cz.palo.autoservis.model.domain.vehicle.Vehicle">
+        UPDATE vehicle.vehicles
+        SET customer_id             = #{customerId},
+            vin                     = #{vin},
+            machine_serial_number   = #{machineSerialNumber},
+            license_plate           = #{licensePlate},
+            brand                   = #{brand},
+            model                   = #{model},
+            year_of_manufacture     = #{yearOfManufacture},
+            first_registration_date = #{firstRegistrationDate},
+            fuel_type               = #{fuelType,     jdbcType=OTHER},
+            transmission            = #{transmission, jdbcType=OTHER},
+            engine_code             = #{engineCode},
+            engine_displacement_ccm = #{engineDisplacementCcm},
+            engine_power_kw         = #{enginePowerKw},
+            color                   = #{color},
+            internal_note           = #{internalNote},
+            is_active               = #{active}
+        WHERE id = #{id}
+    </update>
+
+    <update id="deactivate">
+        UPDATE vehicle.vehicles
+        SET is_active = FALSE
+        WHERE id = #{id}
+    </update>
+
+    <update id="deactivateByCustomerId">
+        UPDATE vehicle.vehicles SET
+        is_active = FALSE
+        WHERE customer_id = #{customerId} AND is_active = TRUE
+    </update>
+
+    <update id="activate">
+        UPDATE vehicle.vehicles
+        SET is_active = TRUE
+        WHERE id = #{id}
+    </update>
+
+
+    <!-- =========================================================
+         Existence checks
+         ========================================================= -->
+
+    <select id="existsByVin" resultType="boolean">
+        SELECT EXISTS(SELECT 1 FROM vehicle.vehicles WHERE vin = #{vin})
+    </select>
+
+</mapper>

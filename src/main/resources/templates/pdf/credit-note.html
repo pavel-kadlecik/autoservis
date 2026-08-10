@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="cs" xmlns:th="http://www.thymeleaf.org">
+<head>
+    <meta charset="UTF-8"/>
+    <style th:replace="~{pdf/invoice-styles :: styles}"></style>
+</head>
+<body>
+
+<!-- Patička na každé straně -->
+<div class="doc-footer">Opravný daňový doklad č. <span th:text="${cn.creditNoteNumber} ?: 'NÁVRH'">OD00000</span></div>
+
+<!-- ================= Hlavička ================= -->
+<header>
+    <table>
+        <tr>
+            <td style="width: 60%; vertical-align: middle;">
+                <div class="party-block" style="font-size: 16pt; font-weight: bold;">OPRAVNÝ DAŇOVÝ DOKLAD</div>
+            </td>
+            <td class="text-right" style="width: 40%; vertical-align: middle;">
+                <div class="party-block" style="font-size: 13pt; font-weight: bold;">
+                    č. <span th:text="${cn.creditNoteNumber} ?: 'NÁVRH'">OD00000</span>
+                </div>
+            </td>
+        </tr>
+    </table>
+</header>
+
+<!-- ================= Reference a důvod (§45) ================= -->
+<section class="section">
+    <div class="party-line">
+        <span class="muted">Opravný daňový doklad k faktuře č.:</span>
+        <span th:text="${cn.originalInvoiceNumber}">202601001</span>
+    </div>
+    <div class="party-line">
+        <span class="muted">Důvod opravy:</span> <span th:text="${cn.correctionReason}">Reklamace</span>
+    </div>
+    <div class="party-line">
+        <span class="muted">Datum vystavení:</span> <span th:text="${cn.issueDate}">2026-01-01</span>
+    </div>
+    <div class="party-line">
+        <span class="muted">DUZP:</span> <span th:text="${cn.taxableSupplyDate}">2026-01-01</span>
+    </div>
+</section>
+
+<!-- ================= Dodavatel | Odběratel ================= -->
+<section class="section">
+    <table>
+        <tr>
+            <td class="section-head" style="width: 50%;">Dodavatel</td>
+            <td class="section-head" style="width: 50%; border-left: 2px solid #fff;">Odběratel</td>
+        </tr>
+    </table>
+    <table class="parties keep-together">
+        <tr>
+            <td>
+                <div class="party-line bold" th:text="${cn.supplier?.name}">Firma s.r.o.</div>
+                <div class="party-line" th:text="|${cn.supplier?.street} ${cn.supplier?.streetNumber}|">Ulice 1</div>
+                <div class="party-line" th:text="|${cn.supplier?.postalCode} ${cn.supplier?.city}|">000 00 Město</div>
+                <div class="party-line" th:if="${cn.supplier?.ico}">
+                    <span class="muted">IČ:</span> <span th:text="${cn.supplier.ico}">00000000</span>
+                </div>
+                <div class="party-line" th:if="${cn.supplier?.dic}">
+                    <span class="muted">DIČ:</span> <span th:text="${cn.supplier.dic}">CZ00000000</span>
+                </div>
+            </td>
+            <td>
+                <div class="party-line bold" th:text="${cn.customer?.name}">Zákazník</div>
+                <div class="party-line" th:text="|${cn.customer?.street} ${cn.customer?.streetNumber}|">Ulice 2</div>
+                <div class="party-line" th:text="|${cn.customer?.postalCode} ${cn.customer?.city}|">000 00 Město</div>
+                <div class="party-line" th:if="${cn.customer?.ico}">
+                    <span class="muted">IČ:</span> <span th:text="${cn.customer.ico}">00000000</span>
+                </div>
+                <div class="party-line" th:if="${cn.customer?.dic}">
+                    <span class="muted">DIČ:</span> <span th:text="${cn.customer.dic}">CZ00000000</span>
+                </div>
+            </td>
+        </tr>
+    </table>
+</section>
+
+<!-- ================= Rozdíly po sazbách (§45) ================= -->
+<section class="section">
+    <table>
+        <thead>
+        <tr>
+            <th>Sazba DPH</th>
+            <th class="text-right">Rozdíl základu</th>
+            <th class="text-right">Rozdíl DPH</th>
+            <th class="text-right">Rozdíl celkem</th>
+        </tr>
+        </thead>
+        <tbody>
+        <tr th:each="line : ${cn.vatDifferences}">
+            <td><span th:text="${line.rate}">21</span> %</td>
+            <td class="text-right" th:text="${line.base}">0,00</td>
+            <td class="text-right" th:text="${line.vat}">0,00</td>
+            <td class="text-right" th:text="${line.total}">0,00</td>
+        </tr>
+        <tr style="font-weight: bold;">
+            <td>Celkem</td>
+            <td class="text-right" th:text="${cn.totalNetDifference}">0,00</td>
+            <td class="text-right" th:text="${cn.totalVatDifference}">0,00</td>
+            <td class="text-right" th:text="${cn.totalGrossDifference}">0,00</td>
+        </tr>
+        </tbody>
+    </table>
+</section>
+
+</body>
+</html>

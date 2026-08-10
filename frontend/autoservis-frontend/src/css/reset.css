@@ -1,0 +1,50 @@
+/* === Moderní CSS reset === */
+
+/* 1. Box sizing: width a height zahrnují border a padding.
+      Bez tohoto je element se 100% šířky + paddingem širší než 100%. */
+*,
+*::before,
+*::after {
+    box-sizing: border-box;
+}
+
+/* 2. Smazání defaultních marginů u nadpisů, odstavců, listů.
+      Browsery dávají velké marginy pro čitelnost čistého HTML, ale
+      v aplikaci si je řešíme sami v komponentách. */
+body,
+h1, h2, h3, h4, h5, h6,
+p, figure, blockquote, dl, dd {
+    margin: 0;
+}
+
+/* 3. Rozumný výchozí line-height pro celý dokument.
+      Default browseru (~1.2) je moc těsný pro tělo textu. */
+body {
+    min-height: 100vh;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+}
+
+/* 4. Nadpisy mají kratší line-height než tělo textu — aby se
+      víceřádkový nadpis nelámal jako odstavec. */
+h1, h2, h3, h4, h5, h6 {
+    line-height: 1.1;
+}
+
+/* 5. Obrázky se chovají jako block (žádný "phantom" prostor pod nimi)
+      a respektují šířku rodiče místo aby ji přetékaly. */
+img, picture, video, canvas, svg {
+    display: block;
+    max-width: 100%;
+}
+
+/* 6. Form elementy dědí typografii z rodiče — defaultně mají
+      vlastní system font, což působí cizorodě. */
+input, button, textarea, select {
+    font: inherit;
+}
+
+/* 7. Velmi dlouhá slova (URL, ID) se zalomí místo aby roztáhly layout. */
+p, h1, h2, h3, h4, h5, h6 {
+    overflow-wrap: break-word;
+}

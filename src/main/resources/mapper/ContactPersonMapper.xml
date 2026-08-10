@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+
+<!--
+    ContactPersonMapper.xml — SQL pro cz.palo.autoservis.mapper.ContactPersonMapper
+    Tabulka: customer.contact_persons (vždy plně kvalifikovaná dle konvence projektu)
+    Na ContactPersonResultMap se odkazuje CustomerMapper (columnPrefix="cp_").
+-->
+<mapper namespace="cz.palo.autoservis.mapper.ContactPersonMapper">
+
+    <resultMap id="ContactPersonResultMap" type="ContactPerson">
+        <id     column="id"          property="id"         javaType="long"/>
+        <result column="customer_id" property="customerId" javaType="long"/>
+        <result column="user_id"     property="userId"     javaType="long"/>
+        <result column="first_name"  property="firstName"/>
+        <result column="last_name"   property="lastName"/>
+        <result column="position"    property="position"/>
+        <result column="email"       property="email"/>
+        <result column="phone"       property="phone"/>
+        <result column="is_primary"  property="primary"/>
+        <result column="is_active"   property="active"/>
+        <result column="note"        property="note"/>
+    </resultMap>
+
+</mapper>

@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+
+<!--
+    ProductMatchingMapper.xml — SQL pro cz.palo.autoservis.mapper.ProductMatchingMapper
+    Párovací kaskáda: převodník supplier_products → normalizovaná čísla dílů
+    → pg_trgm podobnost názvu. Upsert = samoučení převodníku.
+-->
+<mapper namespace="cz.palo.autoservis.mapper.ProductMatchingMapper">
+
+    <select id="findProductIdBySupplierSku" resultType="long">
+        SELECT sp.product_id
+        FROM warehouse.supplier_products sp
+        JOIN warehouse.products p ON p.id = sp.product_id AND p.is_active = TRUE
+        WHERE sp.supplier_id = #{supplierId}
+        AND sp.supplier_sku = #{supplierSku}
+    </select>
+
+    <!-- normalizace sku on-the-fly zrcadlí generovaný sloupec part_number_normalized -->
+    <select id="findByNormalizedNumbers"
+            resultType="cz.palo.autoservis.mapper.ProductMatchingMapper$Candidate">
+        SELECT p.id AS productId, p.sku, p.name, 1.0 AS score
+        FROM warehouse.products p
+        WHERE p.is_active = TRUE
+        AND (
+            p.part_number_normalized IN
+            <foreach collection="numbers" item="n" open="(" separator="," close=")">#{n}</foreach>
+            OR NULLIF(regexp_replace(upper(p.sku), '[ .\-]', '', 'g'), '') IN
+            <foreach collection="numbers" item="n" open="(" separator="," close=")">#{n}</foreach>
+        )
+        ORDER BY p.name
+        LIMIT 5
+    </select>
+
+    <select id="findByNameSimilarity"
+            resultType="cz.palo.autoservis.mapper.ProductMatchingMapper$Candidate">
+        SELECT p.id AS productId, p.sku, p.name,
+               public.similarity(p.name, #{name}) AS score
+        FROM warehouse.products p
+        WHERE p.is_active = TRUE
+        AND public.similarity(p.name, #{name}) &gt; #{threshold}
+        ORDER BY score DESC
+        LIMIT #{limit}
+    </select>
+
+    <insert id="upsertSupplierProduct">
+        INSERT INTO warehouse.supplier_products
+            (supplier_id, supplier_sku, product_id, name_snapshot, last_unit_price_excl_vat, last_seen_at)
+        VALUES
+            (#{supplierId}, #{supplierSku}, #{productId}, #{nameSnapshot}, #{lastUnitPriceExclVat}, NOW())
+        ON CONFLICT (supplier_id, supplier_sku) DO UPDATE
+        SET product_id               = EXCLUDED.product_id,
+            name_snapshot            = EXCLUDED.name_snapshot,
+            last_unit_price_excl_vat = EXCLUDED.last_unit_price_excl_vat,
+            last_seen_at             = NOW()
+    </insert>
+
+</mapper>

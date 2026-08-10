@@ -1,0 +1,233 @@
+/* Základní body — platí pro všechny stránky včetně login */
+body { background-color: #f8f9fa; }
+
+#sidebar {
+    width: 240px;
+    min-height: 100vh;
+    background-color: #212529;
+    flex-shrink: 0;
+    position: sticky;
+    top: 0;
+    height: 100vh;
+    overflow-y: auto;
+
+    /* Systémový scrollbar má světlou dráhu — na tmavém menu působí jako bílý
+       pruh nalepený k obsahu. Tenký scrollbar bez dráhy, jehož táhlo splývá
+       s pozadím a zvýrazní se až při najetí (vzor VS Code / GitHub). */
+    scrollbar-width: thin;
+    scrollbar-color: #495057 transparent;
+}
+
+/* Na úzkém okně se vysunuté menu položí PŘES obsah, ne vedle něj: 240 px
+   z 375 px by nechalo obsahu 135 px a stránka by byla nečitelná. Chování menu
+   se tím nemění — pořád se jen přepíná vysunuto/zasunuto a stav si řídí
+   uživatel; mění se jen to, zda menu obsah zmáčkne, nebo překryje. */
+@media (max-width: 767.98px) {
+    #sidebar {
+        position: fixed;
+        top: 0;
+        left: 0;
+        z-index: 1045;          /* nad obsahem, pod modaly (1055) */
+        box-shadow: 0 0 24px rgba(0, 0, 0, .5);
+    }
+}
+
+/* Podklad existuje jen s vysunutým menu a jen na úzkém okně. Klik na něj menu
+   zasune — na dotyku je to očekávanější než trefit šipku v hlavičce. */
+.sidebar-backdrop { display: none; }
+
+@media (max-width: 767.98px) {
+    .sidebar-backdrop {
+        display: block;
+        position: fixed;
+        inset: 0;
+        z-index: 1040;
+        background-color: rgba(0, 0, 0, .5);
+        border: 0;
+        padding: 0;
+    }
+}
+
+/* WebKit ještě potřebuje vlastní pravidla — scrollbar-color v něm zabírá
+   až od Chrome 121, tohle pokryje i starší verze a Safari. */
+#sidebar::-webkit-scrollbar        { width: 8px; }
+#sidebar::-webkit-scrollbar-track  { background: transparent; }
+#sidebar::-webkit-scrollbar-thumb  { background-color: #495057; border-radius: 4px; }
+#sidebar::-webkit-scrollbar-thumb:hover { background-color: #6c757d; }
+
+#sidebar .nav-link {
+    color: #adb5bd;
+    border-radius: 6px;
+    margin: 2px 8px;
+    padding: 8px 12px;
+}
+#sidebar .nav-link:hover  { color: #fff; background-color: #343a40; }
+#sidebar .nav-link.active { color: #fff; background-color: #0d6efd; }
+#sidebar .nav-link i      { width: 20px; text-align: center; margin-right: 8px; }
+
+/* Podpoložky skupiny. Dřív se odsazovalo utilitou ps-5 přímo v JSX, což mimo jiné
+   předstíralo hierarchii i tam, kde žádná nebyla (Dodavatelé pod Skladem). */
+#sidebar .nav-sub { padding-left: 34px; }
+
+/* Hlavička rozbalovací skupiny — vypadá jako položka, ale je to <button>.
+   Šířka musí počítat s postranními marginy .nav-link (2×8 px), jinak je obsah
+   sidebaru širší než sidebar sám a naskočí vodorovný scrollbar. */
+#sidebar .nav-group-toggle {
+    display: flex;
+    align-items: center;
+    width: calc(100% - 16px);
+    border: 0;
+    background: transparent;
+}
+#sidebar .nav-group-toggle .ms-auto { margin-right: 0; width: auto; }
+
+/* Sbalená skupina s aktivní stránkou uvnitř: jen jemné zvýraznění levým pruhem,
+   ne plná modrá — ta patří skutečně aktivní položce. */
+#sidebar .nav-group-active {
+    color: #fff;
+    box-shadow: inset 3px 0 0 #0d6efd;
+}
+
+/* Oddělený spodní blok (nastavení, uživatelé, nápověda). */
+#sidebar .nav-section-separated {
+    margin-top: 12px;
+    padding-top: 12px;
+    border-top: 1px solid #343a40;
+}
+
+/* Menu má jediné chování na všech šířkách — žádný breakpoint, žádný překryv:
+   zasunuté se nevykreslí a obsah dostane celou šířku (řeší Layout, ne CSS).
+   Stav si uživatel přepíná sám a drží se v localStorage. */
+
+/* Přepínací šipka v hlavičce panelu i ve sbalené liště — jeden vzhled. */
+.sidebar-collapse {
+    color: #adb5bd;
+    border: 0;
+    background: transparent;
+    padding: 4px 6px;
+    line-height: 1;
+}
+.sidebar-collapse:hover { color: #fff; background-color: #343a40; }
+
+/* Sbalená lišta menu = tmavý pruh přes celou šířku, stejné pozadí jako panel.
+   Vlevo hlavička skrytého panelu (nadpis + šipka na stejném místě jako
+   v rozbaleném Sidebaru, jen šipka míří ven), vpravo ukotvený účet — totéž,
+   co je v menu pod čarou (jméno, změna hesla, odhlášení), aby po sbalení menu
+   nezmizely. Bez ní tu byla světlá lišta s hamburgerem mimo styl menu. */
+.sidebar-collapsed-bar {
+    display: flex;
+    align-items: center;
+    /* Přes celou šířku obsahu, na doraz nahoru (ruší padding #main-content). */
+    margin: -24px -24px 24px -24px;
+    padding: 10px 16px;
+    background-color: #212529;
+}
+/* Levý blok má šířku panelu (240 px), aby nadpis i šipka seděly na stejném
+   místě jako v rozbaleném Sidebaru. */
+.sidebar-collapsed-bar .collapsed-brand {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 208px;
+    flex-shrink: 0;
+}
+.sidebar-collapsed-bar .sidebar-brand { color: #fff; font-weight: 700; }
+
+/* Účtové akce vpravo — vzhled jako položky menu (šedé, na hover zesvětlají). */
+.sidebar-collapsed-bar .account-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: #adb5bd;
+    border: 0;
+    background: transparent;
+    padding: 6px 10px;
+    border-radius: 6px;
+    white-space: nowrap;
+}
+.sidebar-collapsed-bar .account-link:hover { color: #fff; background-color: #343a40; }
+.sidebar-collapsed-bar .account-link.logout { color: #ea868f; }
+.sidebar-collapsed-bar .account-link.logout:hover { color: #fff; background-color: #343a40; }
+
+/* Bez overflow-x: hidden — široké tabulky se scrollují uvnitř .table-responsive,
+   ne že se useknou mimo obraz (U0.3). min-width: 0 nechá flex položku zúžit se
+   pod šířku obsahu, jinak by ji tabulka roztáhla a rozbila layout. */
+#main-content { flex: 1; min-width: 0; padding: 24px; }
+
+/* Hlavička stránky (PageHeader). min-height titulního řádku = výška tlačítka
+   i avataru, aby nadpis seděl ve stejné výšce bez ohledu na to, jestli hlavička
+   má akce, avatar nebo podtitulek — jinak se nadpis stránku od stránky posouval. */
+.page-header-row { min-height: 40px; }
+
+/* Sbalený náhled dokladu — svislý pruh u pravého okraje kontrolní obrazovky.
+   Drží se v dohledu i při odscrollování dlouhého soupisu řádků. */
+.pdf-rail {
+    writing-mode: vertical-rl;
+    position: sticky;
+    top: 1rem;
+    padding: 1rem 0.5rem;
+    white-space: nowrap;
+}
+
+/* Tabulka.
+   Barva textu hlavičky byla #6c757d, což je na pozadí #f1f3f5 kontrast 4,22:1 — pod hranicí
+   WCAG AA pro normální text (4,5:1), a to u 12,8px verzálek s prostrkáním, tedy nejhůř čitelné
+   kombinace v aplikaci (audit 11-F-17). #495057 dává ≈7:1 a v šeru dílny se čte spolehlivě. */
+.table thead th { background-color: #f1f3f5; font-size: 0.8rem;
+    text-transform: uppercase; letter-spacing: 0.05em;
+    color: #495057; border-bottom: 2px solid #dee2e6; }
+
+/* Ruka jen tam, kde řádek opravdu něco dělá — třídu nasazuje DataTable,
+   ne globální pravidlo na .table-hover (dřív lákalo ke kliknutí i tam,
+   kde se po kliknutí nestalo nic). */
+.table-clickable tbody tr { cursor: pointer; }
+
+/* Řaditelná hlavička: tlačítko, které vypadá jako text hlavičky. */
+.table-sort {
+    border: 0;
+    background: none;
+    padding: 0;
+    font: inherit;
+    color: inherit;
+    text-transform: inherit;
+    letter-spacing: inherit;
+    cursor: pointer;
+}
+.table-sort:hover { color: var(--bs-body-color); }
+
+/* Validace: Bootstrap po `was-validated` maluje zelený rámeček a fajfku i do
+   prázdných nepovinných polí — vizuální šum, který odvádí pozornost od chyb.
+   Necháváme jen červenou zpětnou vazbu. */
+.was-validated .form-control:valid,
+.was-validated .form-select:valid,
+.was-validated .form-check-input:valid {
+    border-color: var(--bs-border-color);
+    background-image: none;
+    box-shadow: none;
+}
+.was-validated .form-check-input:valid ~ .form-check-label { color: inherit; }
+.was-validated .form-control:valid:focus,
+.was-validated .form-select:valid:focus {
+    border-color: #86b7fe;
+    box-shadow: 0 0 0 0.25rem rgba(13, 110, 253, 0.25);
+}
+
+/* Zámek scrollu pozadí při otevřeném modalu. Bootstrap 5.3 tohle pravidlo v CSS
+   nemá — nastavuje inline styl ze svého JS, které pro modaly nepoužíváme
+   (komponenta Modal si třídu přidává sama). `scrollbar-gutter` drží místo po
+   scrollbaru, aby obsah při otevření dialogu neposkočil. */
+body { scrollbar-gutter: stable; }
+body.modal-open { overflow: hidden; }
+
+/* Prázdný stav */
+.empty-state { text-align: center; padding: 60px 20px; color: #6c757d; }
+.empty-state i { font-size: 3rem; margin-bottom: 16px; opacity: 0.4; }
+
+/* Patička seznamu (volba velikosti stránky + stránkování). Dřív se používala
+   Bootstrapí `.card-footer`, jenže seznam není karta — třída se tedy opírala
+   o kontext, který kolem ní neexistuje. */
+.list-footer {
+    background-color: #fff;
+    border-top: 1px solid var(--bs-border-color);
+    border-radius: 0 0 6px 6px;
+}

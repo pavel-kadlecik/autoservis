@@ -1,0 +1,112 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+
+<!--
+    InvoiceItemMapper.xml — SQL pro cz.palo.autoservis.mapper.InvoiceItemMapper
+    Tabulka: billing.invoice_items (vždy plně kvalifikovaná dle konvence projektu)
+-->
+<mapper namespace="cz.palo.autoservis.mapper.InvoiceItemMapper">
+
+    <resultMap id="InvoiceItemResultMap" type="cz.palo.autoservis.model.domain.billing.InvoiceItem">
+        <id     property="id"          column="id"/>
+        <result property="invoiceId"   column="invoice_id"/>
+        <result property="orderItemId" column="order_item_id"/>
+        <result property="name"        column="name"/>
+        <result property="quantity"    column="quantity"/>
+        <result property="unit"        column="unit"/>
+        <result property="unitPrice"   column="unit_price"/>
+        <result property="vatRate"     column="vat_rate"/>
+        <result property="position"    column="position"/>
+        <result property="net"         column="net"/>
+        <result property="vat"         column="vat"/>
+        <result property="gross"       column="gross"/>
+    </resultMap>
+
+    <sql id="invoiceItemColumns">
+        ii.id, ii.invoice_id, ii.order_item_id,
+        ii.name, ii.quantity, ii.unit, ii.unit_price, ii.vat_rate, ii.position
+    </sql>
+
+    <!-- Guarded write (TD-58/S-4, vzor K5): položku lze přidat jen když je faktura DRAFT.
+         INSERT ... SELECT ... WHERE EXISTS uzavírá TOCTOU okno mezi requireEditable a zápisem —
+         souběžný issue() (DRAFT→ISSUED) způsobí 0 vložených řádků a service vrátí 409, místo aby
+         se položka tiše přidala k už vystavenému dokladu. -->
+    <insert id="insert"
+            parameterType="cz.palo.autoservis.model.domain.billing.InvoiceItem"
+            useGeneratedKeys="true" keyProperty="id" keyColumn="id">
+        INSERT INTO billing.invoice_items (
+            invoice_id, order_item_id, name, quantity, unit, unit_price, vat_rate, position
+        )
+        SELECT #{invoiceId}, #{orderItemId}, #{name}, #{quantity}, #{unit},
+               #{unitPrice}, #{vatRate}, #{position}
+        WHERE EXISTS (
+            SELECT 1 FROM billing.invoices i
+            WHERE i.id = #{invoiceId} AND i.status = 'DRAFT'::billing.invoice_status
+        )
+    </insert>
+
+    <insert id="insertBatch">
+        INSERT INTO billing.invoice_items (
+            invoice_id, order_item_id, name, quantity, unit, unit_price, vat_rate, position
+        ) VALUES
+        <foreach collection="items" item="item" separator=",">
+            (#{invoiceId}, #{item.orderItemId}, #{item.name}, #{item.quantity},
+             #{item.unit}, #{item.unitPrice}, #{item.vatRate}, #{item.position})
+        </foreach>
+    </insert>
+
+    <!-- Full-replace (sladěno s ostatními moduly, TD-54/E1.1). name/quantity/unit/unit_price/vat_rate
+         jsou @NotNull v DTO; position není @NotNull, ale sloupec je NOT NULL → COALESCE (ponech stávající). -->
+    <update id="update" parameterType="cz.palo.autoservis.model.domain.billing.InvoiceItem">
+        UPDATE billing.invoice_items
+        SET name       = #{name},
+            quantity   = #{quantity},
+            unit       = #{unit},
+            unit_price = #{unitPrice},
+            vat_rate   = #{vatRate},
+            position   = COALESCE(#{position}, position)
+        WHERE id = #{id}
+          <!-- Guarded write (TD-58/S-4): jen když je nadřazená faktura DRAFT. -->
+          AND EXISTS (
+              SELECT 1 FROM billing.invoices i
+              WHERE i.id = billing.invoice_items.invoice_id
+                AND i.status = 'DRAFT'::billing.invoice_status
+          )
+    </update>
+
+    <!-- net/vat/gross se dopočítávají stejně jako ve findByInvoiceId (E1.6/S-7),
+         aby odpověď POST/PUT položky nesla spočtené souhrny, ne null. -->
+    <select id="findById" resultMap="InvoiceItemResultMap">
+        SELECT <include refid="invoiceItemColumns"/>,
+            ROUND(ii.quantity * ii.unit_price, 2)                       AS net,
+            ROUND(ii.quantity * ii.unit_price * ii.vat_rate / 100.0, 2) AS vat,
+            ROUND(ii.quantity * ii.unit_price, 2)
+                + ROUND(ii.quantity * ii.unit_price * ii.vat_rate / 100.0, 2) AS gross
+        FROM billing.invoice_items AS ii
+        WHERE ii.id = #{id}
+    </select>
+
+    <select id="findByInvoiceId" resultMap="InvoiceItemResultMap">
+        SELECT <include refid="invoiceItemColumns"/>,
+            ROUND(ii.quantity * ii.unit_price, 2)                       AS net,
+            ROUND(ii.quantity * ii.unit_price * ii.vat_rate / 100.0, 2) AS vat,
+            ROUND(ii.quantity * ii.unit_price, 2)
+                + ROUND(ii.quantity * ii.unit_price * ii.vat_rate / 100.0, 2) AS gross
+        FROM billing.invoice_items AS ii
+        WHERE ii.invoice_id = #{invoiceId}
+        ORDER BY ii.position
+    </select>
+
+    <!-- Guarded write (TD-58/S-4): položku lze smazat jen když je faktura DRAFT. -->
+    <delete id="deleteById">
+        DELETE FROM billing.invoice_items
+        WHERE id = #{id}
+          AND EXISTS (
+              SELECT 1 FROM billing.invoices i
+              WHERE i.id = billing.invoice_items.invoice_id
+                AND i.status = 'DRAFT'::billing.invoice_status
+          )
+    </delete>
+
+</mapper>
